@@ -1,0 +1,6 @@
+bin/
+obj/
+.env
+report.html
+*.user
+.vs/

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Εβδομαδιαία Ενημέρωση Αγορών</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  .wrapper { max-width: 780px; margin: 0 auto; padding: 20px; }
+
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 32px;
+    text-align: center;
+    margin-bottom: 24px;
+  }
+  .header-logo { font-size: 36px; margin-bottom: 8px; }
+  .header h1 {
+    font-size: 26px;
+    font-weight: 700;
+    color: #58a6ff;
+    margin-bottom: 6px;
+  }
+  .header .subtitle { color: #8b949e; font-size: 14px; }
+  .header .date-badge {
+    display: inline-block;
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 20px;
+    padding: 4px 16px;
+    font-size: 13px;
+    color: #8b949e;
+    margin-top: 12px;
+  }
+
+  /* Source pills */
+  .sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 28px;
+    justify-content: center;
+  }
+  .source-pill {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: #8b949e;
+  }
+
+  /* Sections */
+  .section {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .section h2 {
+    font-size: 18px;
+    color: #58a6ff;
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 10px;
+    margin-bottom: 16px;
+  }
+  .section h3 {
+    font-size: 15px;
+    color: #d29922;
+    margin: 14px 0 8px;
+  }
+  .section p { color: #c9d1d9; margin-bottom: 10px; }
+  .section ul { padding-left: 20px; color: #c9d1d9; }
+  .section li { margin-bottom: 6px; }
+  .section strong { color: #e6edf3; }
+
+  /* Charts */
+  .chart-section {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .chart-section h2 {
+    font-size: 16px;
+    color: #58a6ff;
+    margin-bottom: 14px;
+    text-align: left;
+  }
+  .chart-section img {
+    max-width: 100%;
+    border-radius: 8px;
+    border: 1px solid #21262d;
+  }
+
+  /* Tables */
+  .market-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin: 10px 0;
+  }
+  .market-table th {
+    background: #21262d;
+    color: #58a6ff;
+    padding: 8px 12px;
+    text-align: left;
+    font-weight: 600;
+  }
+  .market-table td {
+    padding: 7px 12px;
+    border-bottom: 1px solid #21262d;
+    color: #c9d1d9;
+  }
+  .market-table tr:last-child td { border-bottom: none; }
+  .market-table tr:hover td { background: #1c2128; }
+  .up   { color: #3fb950; font-weight: 600; }
+  .down { color: #f85149; font-weight: 600; }
+
+  /* Source sections */
+  .source-section {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 22px 24px;
+    margin-bottom: 20px;
+  }
+  .source-section h2 {
+    font-size: 17px;
+    color: #58a6ff;
+    margin-bottom: 6px;
+  }
+  .source-url {
+    font-size: 12px;
+    margin-bottom: 14px;
+    padding: 6px 10px;
+    background: #0d1117;
+    border-radius: 6px;
+    border: 1px solid #30363d;
+    font-family: monospace;
+    word-break: break-all;
+  }
+  .source-url a { color: #3fb950; text-decoration: none; }
+  .source-url a:hover { text-decoration: underline; }
+  .source-section h3 {
+    font-size: 14px;
+    color: #d29922;
+    margin: 14px 0 6px;
+  }
+  .source-section p  { color: #c9d1d9; margin-bottom: 8px; font-size: 14px; }
+  .source-section ul { padding-left: 18px; color: #c9d1d9; font-size: 14px; }
+  .source-section li { margin-bottom: 4px; }
+  .source-section strong { color: #e6edf3; }
+
+  /* Sources list */
+  .sources-list { list-style: none; padding-left: 0; }
+  .sources-list li {
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    font-size: 13px;
+    word-break: break-all;
+  }
+  .sources-list a { color: #3fb950; text-decoration: none; }
+  .sources-list a:hover { text-decoration: underline; }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    color: #6e7681;
+    font-size: 12px;
+    border-top: 1px solid #21262d;
+    padding-top: 20px;
+    margin-top: 10px;
+  }
+  .footer a { color: #58a6ff; text-decoration: none; }
+
+  /* Alert box */
+  .alert {
+    background: #1c2128;
+    border-left: 4px solid #d29922;
+    border-radius: 0 6px 6px 0;
+    padding: 12px 16px;
+    margin: 12px 0;
+    font-size: 13px;
+    color: #c9d1d9;
+  }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-logo">📊</div>
+    <h1>Ενημέρωση Αγορών — Τελευταίες 10 Ημέρες</h1>
+    <p class="subtitle">Σύνθεση από 8 κορυφαίους χρηματοοικονομικούς οίκους</p>
+    <span class="date-badge">Περίοδος: {{ since_date }} – {{ report_date }}</span>
+  </div>
+
+  <!-- Sources -->
+  <div class="sources">
+    <span class="source-pill">Bloomberg</span>
+    <span class="source-pill">BlackRock</span>
+    <span class="source-pill">T. Rowe Price</span>
+    <span class="source-pill">John Hancock</span>
+    <span class="source-pill">BNP Paribas AM</span>
+    <span class="source-pill">Edward Jones</span>
+    <span class="source-pill">JPMorgan AM</span>
+    <span class="source-pill">Citi</span>
+  </div>
+
+  <!-- Per-source AI Sections -->
+  {{ ai_summary }}
+
+  <!-- Chart: Indices -->
+  {{ if charts.indices }}
+  <div class="chart-section">
+    <h2>Αποδοση Χρηματιστηριακων Δεικτων</h2>
+    <img src="cid:{{ charts.indices }}" alt="Δείκτες" style="max-width:100%;border-radius:8px;">
+  </div>
+  {{ end }}
+
+  <!-- Chart: Yields -->
+  {{ if charts.yields }}
+  <div class="chart-section">
+    <h2>Αποδοσεις Ομολογων</h2>
+    <img src="cid:{{ charts.yields }}" alt="Ομόλογα" style="max-width:100%;border-radius:8px;">
+  </div>
+  {{ end }}
+
+  <!-- Chart: Forex -->
+  {{ if charts.forex }}
+  <div class="chart-section">
+    <h2>Ισοτιμιες Συναλλαγματος</h2>
+    <img src="cid:{{ charts.forex }}" alt="Συνάλλαγμα" style="max-width:100%;border-radius:8px;">
+  </div>
+  {{ end }}
+
+  <!-- Chart: Macro -->
+  {{ if charts.macro }}
+  <div class="chart-section">
+    <h2>Μακροοικονομικοι Δεικτες</h2>
+    <img src="cid:{{ charts.macro }}" alt="Μακρο" style="max-width:100%;border-radius:8px;">
+  </div>
+  {{ end }}
+
+  <!-- Chart: Commodities -->
+  {{ if charts.commodities }}
+  <div class="chart-section">
+    <h2>Εμπορευματα</h2>
+    <img src="cid:{{ charts.commodities }}" alt="Εμπορεύματα" style="max-width:100%;border-radius:8px;">
+  </div>
+  {{ end }}
+
+  <!-- Disclaimer -->
+  <div class="alert">
+    ⚠️ <strong>Αποποίηση ευθύνης:</strong> Η παρούσα αναφορά παρέχεται αποκλειστικά για ενημερωτικούς σκοπούς.
+    Δεν αποτελεί επενδυτική σύσταση. Πάντοτε συμβουλευτείτε εξουσιοδοτημένο χρηματοοικονομικό σύμβουλο
+    πριν από οποιαδήποτε επενδυτική απόφαση.
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>Δημιουργήθηκε αυτόματα από <strong>Market News AI</strong> · Πηγές: Bloomberg, BlackRock, T. Rowe Price,
+    John Hancock, BNP Paribas AM, Edward Jones, JPMorgan AM, Citi</p>
+    <p style="margin-top:6px;">🤖 AI: Groq (Llama 3.3 70B) · 🕷️ Scraper: Playwright · 📧 Email: Gmail SMTP</p>
+  </div>
+
+</div>
+</body>
+</html>
