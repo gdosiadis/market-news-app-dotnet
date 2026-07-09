@@ -4,3 +4,9 @@ obj/
 report.html
 *.user
 .vs/
+
+# Local scrape cache and debug artifacts — regenerated per run, not source
+MarketNewsApp/cache/
+MarketNewsApp/scrape_debug.txt
+MarketNewsApp/scrape_test_output.txt
+scrape_debug.txt

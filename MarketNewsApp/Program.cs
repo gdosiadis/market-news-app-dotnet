@@ -1,10 +1,12 @@
 using System.CommandLine;
 using DotNetEnv;
+using MarketNewsApp.Models;
 using MarketNewsApp.Services;
 using Scriban;
 
-// Load .env file
-Env.Load();
+// Load .env file — search project directory first, then CWD
+var envFile = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".env");
+Env.Load(File.Exists(envFile) ? envFile : ".env");
 
 var rootCommand = new RootCommand("Market News AI — Daily Email Report");
 
@@ -65,72 +67,101 @@ static void RunPipeline(bool dryRun = false)
     var start = DateTime.Now;
     Banner($"🚀  Market News AI  —  {start:dd/MM/yyyy HH:mm}", '═');
 
-    // Step 1: Scrape
-    Banner("Step 1/4 · Scraping financial sites with Playwright");
-    var scraper = new Scraper();
-    var scraped = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
-    var totalChars = scraped.Values.Sum(v => v.Text.Length);
-    Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {totalChars:N0} chars total");
-
-    // Step 2: AI summary + data extraction
-    Banner("Step 2/4 · Generating Greek summary via Groq AI");
-    var apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY")
-        ?? throw new InvalidOperationException("GROQ_API_KEY not set in environment");
-    var summarizer = new AiSummarizer(apiKey);
-
-    string aiHtml;
-    MarketNewsApp.Models.MarketData marketData;
-    try
+    // ── Step 1/6: Parallel Extraction ────────────────────────────────────────
+    Banner("Step 1/6 · Parallel Extraction");
+    Dictionary<string, ScrapedSite> scraped;
+    if (ScrapeCache.TryLoad(out var cached))
     {
-        (aiHtml, marketData) = summarizer.Run(scraped);
-        Console.WriteLine("  ✅  AI summary ready");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"  ❌  AI summarizer failed: {ex.Message}");
-        Environment.Exit(1);
-        return;
-    }
-
-    // Step 3: Generate charts
-    Banner("Step 3/4 · Generating charts with ScottPlot");
-    var chartGen = new ChartGenerator();
-    var chartImages = chartGen.GenerateAll(marketData);
-    Console.WriteLine($"  ✅  {chartImages.Count} charts generated");
-
-    // Step 4: Send email (or save to file)
-    if (dryRun)
-    {
-        Banner("Step 4/4 · DRY RUN — saving report.html (no email sent)");
-        var emailSender = new EmailSender();
-        var reportDate = DateTime.Now.ToString("dd/MM/yyyy");
-        var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
-        var html = emailSender.RenderHtml(aiHtml, chartImages, reportDate, sinceDate);
-
-        // Replace cid: references with inline base64
-        foreach (var (key, b64) in chartImages)
-        {
-            html = html.Replace($"cid:{key}", $"data:image/png;base64,{b64}");
-            html = html.Replace($"cid:chart_{key}", $"data:image/png;base64,{b64}");
-        }
-
-        var outPath = Path.Combine(Directory.GetCurrentDirectory(), "report.html");
-        File.WriteAllText(outPath, html);
-        Console.WriteLine($"  Saved to {outPath}");
+        scraped = cached;
+        Console.WriteLine($"\n  💾  Cache hit — {scraped.Count} sites loaded (skipping scrape)");
     }
     else
     {
-        Banner("Step 4/4 · Sending email via Gmail SMTP");
+        var scraper = new Scraper();
+        scraped = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
+        Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {scraped.Values.Sum(v => v.Text.Length):N0} chars");
+    }
+
+    // ── Step 2/6: Cleaning ───────────────────────────────────────────────────
+    Banner("Step 2/6 · Cleaning — deduplication & normalization");
+    var cleaned = AiSummarizer.CleanScraped(scraped);
+    Console.WriteLine($"  ✅  {cleaned.Count} sites cleaned");
+
+    // ── Step 3/6: Cache ──────────────────────────────────────────────────────
+    Banner("Step 3/6 · Cache — persisting cleaned data");
+    ScrapeCache.Save(cleaned);
+
+    // ── Step 4/6: Per-source AI summaries ────────────────────────────────────
+    Banner("Step 4/6 · Per-source AI summaries (parallel)");
+    var summarizer = new AiSummarizer();
+    try
+    {
+        Dictionary<string, SourceSummary> perSource;
         try
         {
-            var emailSender = new EmailSender();
-            emailSender.Send(aiHtml, chartImages);
+            perSource = summarizer.SummarizePerSourceAsync(cleaned).GetAwaiter().GetResult();
+            Console.WriteLine($"  ✅  {perSource.Count} per-source summaries ready");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"  ❌  Email send failed: {ex.Message}");
+            Console.WriteLine($"  ❌  Per-source summaries failed: {ex.Message}");
             Environment.Exit(1);
+            return;
         }
+
+        // ── Step 5/6: Final synthesis + market data (parallel) ───────────────────
+        Banner("Step 5/6 · Final synthesis + market data extraction (parallel)");
+        var synthesisTask = summarizer.SynthesizeAsync(perSource);
+        var dataTask      = summarizer.ExtractMarketDataAsync(cleaned);
+        Task.WhenAll(synthesisTask, dataTask).GetAwaiter().GetResult();
+        var synthesis  = synthesisTask.Result;
+        var marketData = dataTask.Result;
+        Console.WriteLine("  ✅  Synthesis and market data ready");
+
+        // ── Step 6/6: Charts + HTML template ─────────────────────────────────────
+        Banner("Step 6/6 · Charts + HTML template");
+        var chartGen    = new ChartGenerator();
+        var chartImages = chartGen.GenerateAll(marketData);
+        Console.WriteLine($"  ✅  {chartImages.Count} charts generated");
+
+        var srcList = string.Join("\n", cleaned.Select(kv =>
+            $"<li>📄 <strong>{kv.Key}</strong> — <a href=\"{kv.Value.Url}\">{kv.Value.Url}</a></li>"));
+        var aiHtml = AiSummarizer.ComposeHtml(perSource, synthesis, srcList);
+
+        if (dryRun)
+        {
+            var emailSender = new EmailSender();
+            var reportDate  = DateTime.Now.ToString("dd/MM/yyyy");
+            var sinceDate   = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
+            var html        = emailSender.RenderHtml(aiHtml, chartImages, reportDate, sinceDate);
+
+            foreach (var (key, b64) in chartImages)
+            {
+                html = html.Replace($"cid:{key}", $"data:image/png;base64,{b64}");
+                html = html.Replace($"cid:chart_{key}", $"data:image/png;base64,{b64}");
+            }
+
+            var outPath = Path.Combine(Directory.GetCurrentDirectory(), "report.html");
+            File.WriteAllText(outPath, html);
+            Console.WriteLine($"  ✅  Saved to {outPath}");
+        }
+        else
+        {
+            try
+            {
+                var emailSender = new EmailSender();
+                emailSender.Send(aiHtml, chartImages);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  ❌  Email send failed: {ex.Message}");
+                Environment.Exit(1);
+            }
+        }
+    }
+    finally
+    {
+        summarizer.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     var elapsed = (DateTime.Now - start).TotalSeconds;

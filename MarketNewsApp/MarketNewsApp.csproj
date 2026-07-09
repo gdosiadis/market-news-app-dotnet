@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="DotNetEnv" Version="3.1.1" />
+    <PackageReference Include="GitHub.Copilot.SDK" Version="1.0.5" />
     <PackageReference Include="MailKit" Version="4.7.1.1" />
     <PackageReference Include="Microsoft.Playwright" Version="1.44.0" />
     <PackageReference Include="ScottPlot" Version="5.0.36" />

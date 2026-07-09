@@ -2,7 +2,7 @@
 
 Αυτόματη εφαρμογή σε .NET 8 που κάθε μέρα:
 1. **Αντλεί** ειδήσεις από 8 κορυφαίους χρηματοοικονομικούς οίκους με Playwright
-2. **Συνοψίζει** στα Ελληνικά μέσω Groq AI (Llama 3.3 70B)
+2. **Συνοψίζει** στα Ελληνικά μέσω Groq AI ή Azure OpenAI (Azure AI Foundry)
 3. **Δημιουργεί** γραφήματα (δείκτες, ομόλογα, συνάλλαγμα, μακρο) με ScottPlot
 4. **Αποστέλλει** HTML email μέσω Gmail (MailKit)
 
@@ -36,7 +36,13 @@ pwsh bin/Debug/net8.0/playwright.ps1 install chromium
 # 4. Ρύθμιση credentials
 cp .env.example .env
 # Επεξεργαστείτε το .env με:
-#   - GROQ_API_KEY  → https://console.groq.com
+#   - Επιλογή A (Groq):
+#       GROQ_API_KEY  → https://console.groq.com
+#   - Επιλογή B (Azure OpenAI / Foundry):
+#       AZURE_OPENAI_ENDPOINT
+#       AZURE_OPENAI_API_KEY
+#       AZURE_OPENAI_DEPLOYMENT
+#       (προαιρετικά) AZURE_OPENAI_API_VERSION
 #   - GMAIL_USER    → το Gmail σας
 #   - GMAIL_APP_PASSWORD → Google Account > Security > App Passwords
 #   - EMAIL_TO      → παραλήπτες (κόμμα για πολλούς)
