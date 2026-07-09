@@ -37,23 +37,25 @@ public class PptxReportGenerator
         string reportDate,
         string sinceDate)
     {
+        GenerateMarketsReview(path, perSource, synthesisHtml, chartImages, reportDate, sinceDate);
+    }
+
+    // ── Deck 1: "Markets review" — cover, source status, synthesis, charts.
+    // Mirrors the reference "Weekly Markets Review" deck: the high-level overview. ─────────
+    public void GenerateMarketsReview(
+        string path,
+        Dictionary<string, SourceSummary> perSource,
+        string synthesisHtml,
+        Dictionary<string, string> chartImages,
+        string reportDate,
+        string sinceDate)
+    {
         File.WriteAllBytes(path, LoadTemplateBytes());
 
         using var doc = PresentationDocument.Open(path, true);
         var presentationPart = doc.PresentationPart!;
-
-        var blankLayoutPart = presentationPart.SlideMasterParts
-            .SelectMany(m => m.SlideLayoutParts)
-            .First(l => l.SlideLayout.Type?.Value == SlideLayoutValues.Blank);
-
-        // Remove the template's placeholder slide(s) — we add our own from scratch.
-        var slideIdList = presentationPart.Presentation.SlideIdList!;
-        foreach (var sid in slideIdList.Elements<SlideId>().ToList())
-        {
-            var slidePart = (SlidePart)presentationPart.GetPartById(sid.RelationshipId!);
-            presentationPart.DeletePart(slidePart);
-            sid.Remove();
-        }
+        var blankLayoutPart = GetBlankLayout(presentationPart);
+        var slideIdList = ResetSlides(presentationPart);
 
         uint slideId = 256;
         _pageNumber = 0;
@@ -95,9 +97,37 @@ public class PptxReportGenerator
             AddSlide(CreateImageSlide(presentationPart, blankLayoutPart, "Assets in review", subtitle, b64, _pageNumber));
         }
 
-        // ── Per-source highlights — a few key bullets per source, not the full text
-        // (the synthesis slide(s) above already cover the condensed overview; this section
-        // is meant as a quick per-source glance, not a duplicate of the "huge email"). ──────
+        presentationPart.Presentation.Save();
+    }
+
+    // ── Deck 2: "Supportive material" — a few key bullets per source, one slide per
+    // source. Mirrors the reference "Weekly Supportive material" deck: the detailed
+    // per-source backup slides, kept separate from the high-level overview deck. ─────────
+    public void GenerateSupportiveMaterial(
+        string path,
+        Dictionary<string, SourceSummary> perSource,
+        string reportDate,
+        string sinceDate)
+    {
+        File.WriteAllBytes(path, LoadTemplateBytes());
+
+        using var doc = PresentationDocument.Open(path, true);
+        var presentationPart = doc.PresentationPart!;
+        var blankLayoutPart = GetBlankLayout(presentationPart);
+        var slideIdList = ResetSlides(presentationPart);
+
+        uint slideId = 256;
+        _pageNumber = 0;
+
+        void AddSlide(SlidePart part)
+        {
+            var rId = presentationPart.GetIdOfPart(part);
+            slideIdList.Append(new SlideId { Id = slideId++, RelationshipId = rId });
+        }
+
+        // ── Slide 1: Branded cover ───────────────────────────────────────────
+        AddSlide(CreateTitleSlide(presentationPart, blankLayoutPart, reportDate, sinceDate, "Υποστηρικτικό Υλικό"));
+
         foreach (var (name, summary) in perSource)
         {
             if (summary.Status is not (SourceStatus.Success or SourceStatus.Partial)) continue;
@@ -108,6 +138,24 @@ public class PptxReportGenerator
         }
 
         presentationPart.Presentation.Save();
+    }
+
+    private static SlideLayoutPart GetBlankLayout(PresentationPart presentationPart) =>
+        presentationPart.SlideMasterParts
+            .SelectMany(m => m.SlideLayoutParts)
+            .First(l => l.SlideLayout.Type?.Value == SlideLayoutValues.Blank);
+
+    // Removes the template's placeholder slide(s) — callers add their own from scratch.
+    private static SlideIdList ResetSlides(PresentationPart presentationPart)
+    {
+        var slideIdList = presentationPart.Presentation.SlideIdList!;
+        foreach (var sid in slideIdList.Elements<SlideId>().ToList())
+        {
+            var slidePart = (SlidePart)presentationPart.GetPartById(sid.RelationshipId!);
+            presentationPart.DeletePart(slidePart);
+            sid.Remove();
+        }
+        return slideIdList;
     }
 
     // ── Embedded assets: a real PowerPoint-generated 16:9 template, and the Optima logo ─────
@@ -275,7 +323,7 @@ public class PptxReportGenerator
             A.TextAlignmentTypeValues.Right));
     }
 
-    private static SlidePart CreateTitleSlide(PresentationPart presentationPart, SlideLayoutPart layoutPart, string reportDate, string sinceDate)
+    private static SlidePart CreateTitleSlide(PresentationPart presentationPart, SlideLayoutPart layoutPart, string reportDate, string sinceDate, string? titleOverride = null)
     {
         var slidePart = NewSlidePart(presentationPart, layoutPart);
         var tree = slidePart.Slide.CommonSlideData!.ShapeTree!;
@@ -292,7 +340,7 @@ public class PptxReportGenerator
 
         // Title.
         tree.Append(TextBoxShape(6, "Title", 685800, 2514600, 9144000, 1150000,
-            new[] { ("Ημερήσια Αναφορά Αγορών", 40, true, "FFFFFF") }));
+            new[] { (titleOverride ?? "Ημερήσια Αναφορά Αγορών", 40, true, "FFFFFF") }));
 
         // Subtitle line (matches the reference "Marketing Material" caption pattern).
         tree.Append(TextBoxShape(7, "Subtitle", 685800, 4800600, 8229600, 700000,

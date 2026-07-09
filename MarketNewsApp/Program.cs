@@ -131,17 +131,22 @@ static void RunPipeline(bool dryRun = false)
         var reportDateStr = DateTime.Now.ToString("dd/MM/yyyy");
         var sinceDateStr  = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
 
-        // ── PowerPoint export — same data as the email, in slide form ─────────
-        var pptxPath = Path.Combine(Directory.GetCurrentDirectory(), "report.pptx");
+        // ── PowerPoint export — two branded decks (Markets Review + Supportive Material),
+        // matching the two reference Optima decks, sent instead of a huge HTML email body ──
+        var marketsReviewPath = Path.Combine(Directory.GetCurrentDirectory(), "MarketsReview.pptx");
+        var supportiveMaterialPath = Path.Combine(Directory.GetCurrentDirectory(), "SupportiveMaterial.pptx");
         try
         {
-            new PptxReportGenerator().Generate(pptxPath, perSource, synthesis, chartImages, reportDateStr, sinceDateStr);
-            Console.WriteLine($"  ✅  PowerPoint saved to {pptxPath}");
+            var pptxGen = new PptxReportGenerator();
+            pptxGen.GenerateMarketsReview(marketsReviewPath, perSource, synthesis, chartImages, reportDateStr, sinceDateStr);
+            pptxGen.GenerateSupportiveMaterial(supportiveMaterialPath, perSource, reportDateStr, sinceDateStr);
+            Console.WriteLine($"  ✅  PowerPoint decks saved: {marketsReviewPath}, {supportiveMaterialPath}");
         }
         catch (Exception ex)
         {
             Console.WriteLine($"  ⚠️  PowerPoint generation failed: {ex.Message}");
-            pptxPath = null!;
+            marketsReviewPath = null!;
+            supportiveMaterialPath = null!;
         }
 
         if (dryRun)
@@ -164,7 +169,7 @@ static void RunPipeline(bool dryRun = false)
             try
             {
                 var emailSender = new EmailSender();
-                emailSender.Send(aiHtml, chartImages, pptxPath);
+                emailSender.Send(reportDateStr, marketsReviewPath, supportiveMaterialPath);
             }
             catch (Exception ex)
             {

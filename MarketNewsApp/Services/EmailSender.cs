@@ -18,7 +18,7 @@ public class EmailSender
         ["commodities"] = "chart_commodities",
     };
 
-    public void Send(string aiSummary, Dictionary<string, string> charts, string? pptxAttachmentPath = null)
+    public void Send(string reportDate, string? marketsReviewPath = null, string? supportiveMaterialPath = null)
     {
         static string? EnvOrNull(string name)
         {
@@ -45,10 +45,6 @@ public class EmailSender
             throw new InvalidOperationException("GMAIL_USER / GMAIL_APP_PASSWORD not set (or configure SMTP_HOST for a different provider)");
 
         var recipients = emailTo.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var reportDate = DateTime.Now.ToString("dddd, dd MMMM yyyy");
-        var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
-
-        var htmlBody = RenderHtml(aiSummary, charts, reportDate, sinceDate);
 
         // Build MIME message
         var message = new MimeMessage();
@@ -57,40 +53,23 @@ public class EmailSender
             message.To.Add(MailboxAddress.Parse(addr));
         message.Subject = $"Market News AI — {DateTime.Now:dd/MM/yyyy}";
 
-        var builder = new BodyBuilder();
-        builder.TextBody = $"Εβδομαδιαία Ενημέρωση Αγορών — {reportDate}\n\n" +
-            "Ανοίξτε σε email client που υποστηρίζει HTML για να δείτε γραφήματα.\n\n" +
-            "Πηγές: Bloomberg, BlackRock, T. Rowe Price, John Hancock, BNP Paribas AM, Edward Jones, JPMorgan AM, Citi";
-        builder.HtmlBody = htmlBody;
-
-        // Attach charts as inline CID images
-        foreach (var (chartKey, b64Data) in charts)
+        // Short plain-text body — the actual report content lives in the two attached
+        // PowerPoint decks (same charts/text/branding as before), not dumped in the email.
+        var builder = new BodyBuilder
         {
-            if (!ChartCids.TryGetValue(chartKey, out var cid)) continue;
-            var imgBytes = Convert.FromBase64String(b64Data);
-            var image = builder.LinkedResources.Add($"{cid}.png", imgBytes, new ContentType("image", "png"));
-            image.ContentId = cid;
-            image.ContentDisposition = new ContentDisposition(ContentDisposition.Inline);
+            TextBody = $"Εβδομαδιαία Ενημέρωση Αγορών — {reportDate}\n\n" +
+                "Δείτε τα συνημμένα PowerPoint αρχεία:\n" +
+                "  • Markets Review — συνθετική επισκόπηση, κατάσταση πηγών, γραφήματα\n" +
+                "  • Supportive Material — αναλυτικά highlights ανά πηγή",
+        };
+
+        foreach (var path in new[] { marketsReviewPath, supportiveMaterialPath })
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+            builder.Attachments.Add(path, new ContentType("application", "vnd.openxmlformats-officedocument.presentationml.presentation"));
         }
 
         message.Body = builder.ToMessageBody();
-
-        // Attach the PowerPoint report, if generated successfully, so the recipient
-        // can view a slide-based summary instead of just the long HTML email body.
-        if (!string.IsNullOrEmpty(pptxAttachmentPath) && File.Exists(pptxAttachmentPath))
-        {
-            var multipart = new Multipart("mixed");
-            multipart.Add(message.Body);
-            var attachment = new MimePart("application", "vnd.openxmlformats-officedocument.presentationml.presentation")
-            {
-                Content = new MimeContent(File.OpenRead(pptxAttachmentPath)),
-                ContentDisposition = new ContentDisposition(ContentDisposition.Attachment),
-                ContentTransferEncoding = ContentEncoding.Base64,
-                FileName = $"MarketNews_{DateTime.Now:yyyy-MM-dd}.pptx",
-            };
-            multipart.Add(attachment);
-            message.Body = multipart;
-        }
 
         // Send via SMTP (Gmail by default, or SMTP_HOST override e.g. Mailpit)
         Console.WriteLine($"  Sending to {string.Join(", ", recipients)} via {smtpHost}:{smtpPort}...");
