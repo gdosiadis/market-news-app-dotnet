@@ -121,7 +121,7 @@ static void RunPipeline(bool dryRun = false)
         // ── Step 6/6: Charts + HTML template ─────────────────────────────────────
         Banner("Step 6/6 · Charts + HTML template");
         var chartGen    = new ChartGenerator();
-        var chartImages = chartGen.GenerateAll(marketData);
+        var chartImages = chartGen.GenerateAllAsync(marketData).GetAwaiter().GetResult();
         Console.WriteLine($"  ✅  {chartImages.Count} charts generated");
 
         var srcList = string.Join("\n", cleaned.Select(kv =>
