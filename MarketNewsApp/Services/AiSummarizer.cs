@@ -177,6 +177,7 @@ public class AiSummarizer : IAsyncDisposable
                 var html = await ChatAsync(
                     [new("system", systemPrompt), new("user", userPrompt)],
                     maxTokens: 3500, temperature: 0.3);
+                html = StripCodeFences(html);
 
                 if (IsNoContent(html))
                 {
@@ -232,6 +233,18 @@ public class AiSummarizer : IAsyncDisposable
         "authenticated session",
         "αφορά αποκλειστικά τη νομική",
     ];
+
+    // Strips leading/trailing markdown code fences (```html ... ``` or ``` ... ```) that the
+    // model occasionally adds despite being told to return raw HTML only.
+    private static string StripCodeFences(string text)
+    {
+        text = text.TrimStart();
+        if (text.StartsWith("```html", StringComparison.OrdinalIgnoreCase)) text = text[7..];
+        else if (text.StartsWith("```")) text = text[3..];
+        text = text.TrimEnd();
+        if (text.EndsWith("```")) text = text[..^3];
+        return text.Trim();
+    }
 
     private static bool IsNoContent(string html)
     {
@@ -328,7 +341,8 @@ public class AiSummarizer : IAsyncDisposable
 
         try
         {
-            return await ChatAsync([new("user", prompt)], maxTokens: 2000, temperature: 0.4);
+            var result = await ChatAsync([new("user", prompt)], maxTokens: 2000, temperature: 0.4);
+            return StripCodeFences(result);
         }
         catch (Exception ex)
         {
@@ -452,7 +466,6 @@ public class AiSummarizer : IAsyncDisposable
         else if (raw.StartsWith("```")) raw = raw[3..];
         if (raw.TrimEnd().EndsWith("```")) raw = raw.TrimEnd()[..^3];
         raw = raw.Trim();
-
         try
         {
             return ParseMarketData(raw);

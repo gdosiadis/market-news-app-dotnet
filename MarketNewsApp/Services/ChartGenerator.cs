@@ -5,16 +5,17 @@ namespace MarketNewsApp.Services;
 
 public class ChartGenerator
 {
-    // Dark theme colors
-    private static readonly ScottPlot.Color DarkBg = ScottPlot.Color.FromHex("#0d1117");
-    private static readonly ScottPlot.Color CardBg = ScottPlot.Color.FromHex("#161b22");
-    private static readonly ScottPlot.Color Green = ScottPlot.Color.FromHex("#3fb950");
-    private static readonly ScottPlot.Color Red = ScottPlot.Color.FromHex("#f85149");
-    private static readonly ScottPlot.Color Blue = ScottPlot.Color.FromHex("#58a6ff");
-    private static readonly ScottPlot.Color Gold = ScottPlot.Color.FromHex("#d29922");
-    private static readonly ScottPlot.Color TextColor = ScottPlot.Color.FromHex("#e6edf3");
-    private static readonly ScottPlot.Color SubText = ScottPlot.Color.FromHex("#8b949e");
-    private static readonly ScottPlot.Color GridColor = ScottPlot.Color.FromHex("#21262d");
+    // Light theme matching the Optima Bank brand palette (white background, navy/orange/gold bars) —
+    // mirrors the reference "Weekly Supportive material" deck's chart style, not a generic dark theme.
+    private static readonly ScottPlot.Color White = ScottPlot.Color.FromHex("#FFFFFF");
+    private static readonly ScottPlot.Color Navy = ScottPlot.Color.FromHex("#1B1B3A");
+    private static readonly ScottPlot.Color Orange = ScottPlot.Color.FromHex("#FF8B00");
+    private static readonly ScottPlot.Color Gold = ScottPlot.Color.FromHex("#E8B84B");
+    private static readonly ScottPlot.Color Teal = ScottPlot.Color.FromHex("#2E7D8C");
+    private static readonly ScottPlot.Color Red = ScottPlot.Color.FromHex("#C0392B");
+    private static readonly ScottPlot.Color Green = ScottPlot.Color.FromHex("#2E8B57");
+    private static readonly ScottPlot.Color TextColor = ScottPlot.Color.FromHex("#1A1A1A");
+    private static readonly ScottPlot.Color GridColor = ScottPlot.Color.FromHex("#D9D9D9");
 
     public Dictionary<string, string> GenerateAll(MarketData data)
     {
@@ -46,17 +47,18 @@ public class ChartGenerator
         }
     }
 
-    private static void ApplyDarkTheme(Plot plot)
+    private static void ApplyLightTheme(Plot plot)
     {
-        plot.FigureBackground.Color = DarkBg;
-        plot.DataBackground.Color = CardBg;
+        plot.FigureBackground.Color = White;
+        plot.DataBackground.Color = White;
         plot.Axes.Bottom.FrameLineStyle.Color = GridColor;
         plot.Axes.Left.FrameLineStyle.Color = GridColor;
-        plot.Axes.Bottom.TickLabelStyle.ForeColor = SubText;
-        plot.Axes.Left.TickLabelStyle.ForeColor = SubText;
+        plot.Axes.Bottom.TickLabelStyle.ForeColor = TextColor;
+        plot.Axes.Left.TickLabelStyle.ForeColor = TextColor;
         plot.Axes.Bottom.Label.ForeColor = TextColor;
         plot.Axes.Left.Label.ForeColor = TextColor;
         plot.Grid.MajorLineColor = GridColor;
+        plot.Title(string.Empty); // titles are handled by the slide's own header/caption instead
     }
 
     private string? ChartIndices(Dictionary<string, IndexData> indices)
@@ -64,7 +66,7 @@ public class ChartGenerator
         if (indices.Count == 0) return null;
 
         var plt = new Plot();
-        ApplyDarkTheme(plt);
+        ApplyLightTheme(plt);
 
         var names = indices.Keys.ToArray();
         var weekly = indices.Values.Select(v => v.WeeklyPct).ToArray();
@@ -82,14 +84,14 @@ public class ChartGenerator
                 Position = positions[i] - 0.2,
                 Value = weekly[i],
                 Size = 0.35,
-                FillColor = weekly[i] >= 0 ? Green : Red,
+                FillColor = Navy,
             });
             ytdBars.Add(new ScottPlot.Bar
             {
                 Position = positions[i] + 0.2,
                 Value = ytd[i],
                 Size = 0.35,
-                FillColor = Blue,
+                FillColor = Orange,
             });
         }
 
@@ -99,10 +101,8 @@ public class ChartGenerator
         plt.Axes.Bottom.SetTicks(positions, names);
         plt.Axes.Bottom.TickLabelStyle.Rotation = -15;
         plt.Axes.Left.Label.Text = "Απόδοση (%)";
-        plt.Title("Αποδοση Χρηματιστηριακων Δεικτων");
-        
 
-        return PlotToBase64(plt, 900, 450);
+        return PlotToBase64(plt, 900, 560);
     }
 
     private string? ChartYields(Dictionary<string, double> yields)
@@ -110,7 +110,7 @@ public class ChartGenerator
         if (yields.Count == 0) return null;
 
         var plt = new Plot();
-        ApplyDarkTheme(plt);
+        ApplyLightTheme(plt);
 
         var names = yields.Keys.ToArray();
         var values = yields.Values.ToArray();
@@ -123,7 +123,7 @@ public class ChartGenerator
             {
                 Position = positions[i],
                 Value = values[i],
-                FillColor = names[i].Contains("High") ? Gold : Blue,
+                FillColor = names[i].Contains("High") ? Gold : Navy,
                 IsVisible = true,
             });
         }
@@ -133,10 +133,8 @@ public class ChartGenerator
 
         plt.Axes.Left.SetTicks(positions, names);
         plt.Axes.Bottom.Label.Text = "Απόδοση (%)";
-        plt.Title("Αποδοσεις Ομολογων & Επιτοκια");
-        
 
-        return PlotToBase64(plt, 800, 400);
+        return PlotToBase64(plt, 900, 560);
     }
 
     private string? ChartForex(Dictionary<string, double> forex)
@@ -144,12 +142,12 @@ public class ChartGenerator
         if (forex.Count == 0) return null;
 
         var plt = new Plot();
-        ApplyDarkTheme(plt);
+        ApplyLightTheme(plt);
 
         var pairs = forex.Keys.ToArray();
         var values = forex.Values.ToArray();
         var positions = Enumerable.Range(0, pairs.Length).Select(i => (double)i).ToArray();
-        var colors = new[] { Green, Blue, Red };
+        var colors = new[] { Navy, Orange, Teal };
 
         var bars = new List<ScottPlot.Bar>();
         for (int i = 0; i < pairs.Length; i++)
@@ -166,10 +164,8 @@ public class ChartGenerator
         plt.Add.Bars(bars.ToArray());
         plt.Axes.Bottom.SetTicks(positions, pairs);
         plt.Axes.Left.Label.Text = "Τιμή";
-        plt.Title("Ισοτιμιες Συναλλαγματος");
-        
 
-        return PlotToBase64(plt, 650, 380);
+        return PlotToBase64(plt, 900, 560);
     }
 
     private string? ChartMacro(Dictionary<string, double> macro)
@@ -177,7 +173,7 @@ public class ChartGenerator
         if (macro.Count == 0) return null;
 
         var plt = new Plot();
-        ApplyDarkTheme(plt);
+        ApplyLightTheme(plt);
 
         var labels = macro.Keys.ToArray();
         var values = macro.Values.ToArray();
@@ -192,7 +188,7 @@ public class ChartGenerator
             else if (labels[i].Contains("Επιτόκιο") || labels[i].Contains("Rate") || labels[i].Contains("Fed"))
                 color = Gold;
             else if (labels[i].Contains("Ανεργ") || labels[i].Contains("Unemploy"))
-                color = Blue;
+                color = Navy;
             else
                 color = Green;
 
@@ -209,10 +205,8 @@ public class ChartGenerator
 
         plt.Axes.Left.SetTicks(positions, labels);
         plt.Axes.Bottom.Label.Text = "Τιμή (%)";
-        plt.Title("Μακροοικονομικοι Δεικτες ΗΠΑ");
-        
 
-        return PlotToBase64(plt, 800, 400);
+        return PlotToBase64(plt, 900, 560);
     }
 
     private string? ChartCommodities(Dictionary<string, double> commodities)
@@ -221,12 +215,12 @@ public class ChartGenerator
         if (items.Count == 0) return null;
 
         var plt = new Plot();
-        ApplyDarkTheme(plt);
+        ApplyLightTheme(plt);
 
         var labels = items.Keys.ToArray();
         var values = items.Values.ToArray();
         var positions = Enumerable.Range(0, labels.Length).Select(i => (double)i).ToArray();
-        var colors = new[] { Gold, Green, Blue };
+        var colors = new[] { Gold, Navy, Teal };
 
         var bars = new List<ScottPlot.Bar>();
         for (int i = 0; i < labels.Length; i++)
@@ -243,10 +237,8 @@ public class ChartGenerator
         plt.Add.Bars(bars.ToArray());
         plt.Axes.Bottom.SetTicks(positions, labels);
         plt.Axes.Left.Label.Text = "Τιμή (USD)";
-        plt.Title("Εμπορευματα");
-        
 
-        return PlotToBase64(plt, 650, 380);
+        return PlotToBase64(plt, 900, 560);
     }
 
     private static string PlotToBase64(Plot plt, int width, int height)
