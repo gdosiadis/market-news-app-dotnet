@@ -22,4 +22,9 @@
     <Content Include="Templates\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\optima_logo_banner.png" />
+    <EmbeddedResource Include="Assets\template.pptx" />
+  </ItemGroup>
+
 </Project>
