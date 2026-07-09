@@ -18,7 +18,7 @@ public class EmailSender
         ["commodities"] = "chart_commodities",
     };
 
-    public void Send(string aiSummary, Dictionary<string, string> charts)
+    public void Send(string aiSummary, Dictionary<string, string> charts, string? pptxAttachmentPath = null)
     {
         static string? EnvOrNull(string name)
         {
@@ -74,6 +74,23 @@ public class EmailSender
         }
 
         message.Body = builder.ToMessageBody();
+
+        // Attach the PowerPoint report, if generated successfully, so the recipient
+        // can view a slide-based summary instead of just the long HTML email body.
+        if (!string.IsNullOrEmpty(pptxAttachmentPath) && File.Exists(pptxAttachmentPath))
+        {
+            var multipart = new Multipart("mixed");
+            multipart.Add(message.Body);
+            var attachment = new MimePart("application", "vnd.openxmlformats-officedocument.presentationml.presentation")
+            {
+                Content = new MimeContent(File.OpenRead(pptxAttachmentPath)),
+                ContentDisposition = new ContentDisposition(ContentDisposition.Attachment),
+                ContentTransferEncoding = ContentEncoding.Base64,
+                FileName = $"MarketNews_{DateTime.Now:yyyy-MM-dd}.pptx",
+            };
+            multipart.Add(attachment);
+            message.Body = multipart;
+        }
 
         // Send via SMTP (Gmail by default, or SMTP_HOST override e.g. Mailpit)
         Console.WriteLine($"  Sending to {string.Join(", ", recipients)} via {smtpHost}:{smtpPort}...");

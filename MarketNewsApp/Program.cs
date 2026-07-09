@@ -128,12 +128,26 @@ static void RunPipeline(bool dryRun = false)
             $"<li>📄 <strong>{kv.Key}</strong> — <a href=\"{kv.Value.Url}\">{kv.Value.Url}</a></li>"));
         var aiHtml = AiSummarizer.ComposeHtml(perSource, synthesis, srcList);
 
+        var reportDateStr = DateTime.Now.ToString("dd/MM/yyyy");
+        var sinceDateStr  = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
+
+        // ── PowerPoint export — same data as the email, in slide form ─────────
+        var pptxPath = Path.Combine(Directory.GetCurrentDirectory(), "report.pptx");
+        try
+        {
+            new PptxReportGenerator().Generate(pptxPath, perSource, synthesis, chartImages, reportDateStr, sinceDateStr);
+            Console.WriteLine($"  ✅  PowerPoint saved to {pptxPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  ⚠️  PowerPoint generation failed: {ex.Message}");
+            pptxPath = null!;
+        }
+
         if (dryRun)
         {
             var emailSender = new EmailSender();
-            var reportDate  = DateTime.Now.ToString("dd/MM/yyyy");
-            var sinceDate   = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
-            var html        = emailSender.RenderHtml(aiHtml, chartImages, reportDate, sinceDate);
+            var html        = emailSender.RenderHtml(aiHtml, chartImages, reportDateStr, sinceDateStr);
 
             foreach (var (key, b64) in chartImages)
             {
@@ -150,7 +164,7 @@ static void RunPipeline(bool dryRun = false)
             try
             {
                 var emailSender = new EmailSender();
-                emailSender.Send(aiHtml, chartImages);
+                emailSender.Send(aiHtml, chartImages, pptxPath);
             }
             catch (Exception ex)
             {

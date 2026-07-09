@@ -2,6 +2,7 @@ bin/
 obj/
 .env
 report.html
+report.pptx
 *.user
 .vs/
 
