@@ -23,8 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Assets\optima_logo_banner.png" />
-    <EmbeddedResource Include="Assets\template.pptx" />
+    <EmbeddedResource Include="Assets\OptimaMasterTemplate.pptx" />
   </ItemGroup>
 
 </Project>
