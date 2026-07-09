@@ -38,18 +38,6 @@ public class Scraper
         },
         new()
         {
-            Name = "John Hancock Weekly Recap",
-            Url = "https://www.jhinvestments.com/weekly-market-recap",
-            Selectors = ["article", "main", ".content", "h1", "h2", "h3", "p"],
-            WaitFor = "h3",
-            Timeout = 30000,
-            // Akamai bot-detection on this site tends to serve an edgesuite.net
-            // challenge/error page to fresh headless sessions. A longer, more
-            // human-like warm-up before extraction gives it more time to clear.
-            ExtraSettleMs = 8000,
-        },
-        new()
-        {
             Name = "BNP Paribas AM Viewpoint",
             Url = "https://viewpoint.bnpparibas-am.com/",
             Selectors = ["article", "main", "p", ".article-title", "h1", "h2", "h3", ".card-title"],
@@ -101,9 +89,9 @@ public class Scraper
         await using var browser = await playwright.Chromium.LaunchAsync(new()
         {
             Headless = true,
-            // Some sites (e.g. John Hancock) detect the default headless-Chromium
-            // automation fingerprint and serve a stripped-down page. These flags plus
-            // the init script in ScrapeSiteAsync reduce that fingerprint.
+            // Some sites detect the default headless-Chromium automation fingerprint and
+            // serve a stripped-down page. These flags plus the init script in
+            // ScrapeSiteAsync reduce that fingerprint.
             Args = ["--disable-blink-features=AutomationControlled"],
         });
 
@@ -215,8 +203,8 @@ public class Scraper
             // more settle time so the real content is in the DOM before we extract it.
             await page.WaitForTimeoutAsync(3000);
 
-            // Sites with tougher bot-detection (e.g. Akamai on John Hancock) get a longer,
-            // human-like warm-up — simulated mouse movement and gradual scrolling — before we
+            // Sites with tougher bot-detection (e.g. Akamai) get a longer, human-like
+            // warm-up — simulated mouse movement and gradual scrolling — before we
             // give them extra settle time to clear the challenge and render real content.
             if (site.ExtraSettleMs > 0)
             {

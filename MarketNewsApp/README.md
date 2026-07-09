@@ -1,7 +1,7 @@
 # 📊 Market News AI (.NET) — Εβδομαδιαία Ενημέρωση Αγορών
 
 Αυτόματη εφαρμογή σε .NET 8 που κάθε μέρα:
-1. **Αντλεί** ειδήσεις από 8 κορυφαίους χρηματοοικονομικούς οίκους με Playwright
+1. **Αντλεί** ειδήσεις από 7 κορυφαίους χρηματοοικονομικούς οίκους με Playwright
 2. **Συνοψίζει** στα Ελληνικά μέσω Groq AI ή Azure OpenAI (Azure AI Foundry)
 3. **Δημιουργεί** γραφήματα (δείκτες, ομόλογα, συνάλλαγμα, μακρο) με ScottPlot
 4. **Αποστέλλει** HTML email μέσω Gmail (MailKit)
@@ -12,7 +12,6 @@
 | Bloomberg | bloomberg.com/markets |
 | BlackRock | blackrock.com/...weekly-commentary |
 | T. Rowe Price | troweprice.com/...global-markets-weekly-update |
-| John Hancock | jhinvestments.com/weekly-market-recap |
 | BNP Paribas AM | viewpoint.bnpparibas-am.com |
 | Edward Jones | edwardjones.com/...stock-market-weekly-update |
 | JPMorgan AM | am.jpmorgan.com/...weekly-market-recap |
