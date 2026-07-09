@@ -50,6 +50,14 @@ public class ScrapedSite
     // Populated by Scraper regardless of success/failure so failures are diagnosable
     // without re-running with extra logging.
     public string Diagnostics { get; set; } = "";
+
+    // True when the scrape actually produced usable content. Failed scrapes store a
+    // "[Site: reason]"-style placeholder in Text and/or a "CAUSE:" marker in Diagnostics —
+    // shared by the live scraper's console reporting and the daily cache validity check so
+    // a transient failure (e.g. a one-off page-load timeout) doesn't get "frozen" as a
+    // false negative for the rest of the day.
+    public bool IsOk =>
+        !Text.StartsWith('[') && !Diagnostics.Contains("CAUSE:", StringComparison.Ordinal);
 }
 
 public enum SourceStatus

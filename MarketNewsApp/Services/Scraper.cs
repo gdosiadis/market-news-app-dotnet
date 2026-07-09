@@ -112,9 +112,7 @@ public class Scraper
         foreach (var (name, data) in completedResults)
         {
             results[name] = data;
-            var hasCause = data.Diagnostics.Contains("CAUSE:", StringComparison.Ordinal);
-            var ok = !data.Text.StartsWith("[") && !hasCause;
-            Console.WriteLine($"  {(ok ? "OK" : "WARN")}  {name}  ({data.Url})");
+            Console.WriteLine($"  {(data.IsOk ? "OK" : "WARN")}  {name}  ({data.Url})");
             if (!string.IsNullOrWhiteSpace(data.Diagnostics))
                 Console.WriteLine($"      ↳ {data.Diagnostics}");
         }

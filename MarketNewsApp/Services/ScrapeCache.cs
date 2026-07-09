@@ -20,7 +20,21 @@ public static class ScrapeCache
             if (!File.Exists(path)) return false;
             var json = File.ReadAllText(path);
             var data = JsonSerializer.Deserialize<Dictionary<string, ScrapedSite>>(json);
-            if (data is { Count: > 0 }) { scraped = data; return true; }
+            if (data is not { Count: > 0 }) return false;
+
+            // Don't let a transient failure (e.g. a one-off page-load timeout) get "frozen"
+            // as the day's result: if any cached site failed, treat the whole cache as stale
+            // so the run falls through to a fresh scrape instead of reusing a bad result for
+            // the rest of the day.
+            var failed = data.Where(kv => !kv.Value.IsOk).Select(kv => kv.Key).ToList();
+            if (failed.Count > 0)
+            {
+                Console.WriteLine($"  ⚠️  Cache has {failed.Count} failed site(s) ({string.Join(", ", failed)}) — ignoring cache, re-scraping");
+                return false;
+            }
+
+            scraped = data;
+            return true;
         }
         catch { }
         return false;
