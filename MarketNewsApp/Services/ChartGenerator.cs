@@ -61,6 +61,9 @@ public class ChartGenerator
         plot.Title(string.Empty); // titles are handled by the slide's own header/caption instead
     }
 
+    // "Assets in review" style: a horizontal weekly-performance bar (green/red by sign) per
+    // index, plus a gold diamond marker showing the YTD return — mirrors the reference deck's
+    // range+dot chart instead of a plain grouped bar comparison.
     private string? ChartIndices(Dictionary<string, IndexData> indices)
     {
         if (indices.Count == 0) return null;
@@ -68,39 +71,44 @@ public class ChartGenerator
         var plt = new Plot();
         ApplyLightTheme(plt);
 
-        var names = indices.Keys.ToArray();
-        var weekly = indices.Values.Select(v => v.WeeklyPct).ToArray();
-        var ytd = indices.Values.Select(v => v.YtdPct).ToArray();
+        // Sort by weekly performance so the strongest movers read top-to-bottom, like the reference.
+        var ordered = indices.OrderByDescending(kv => kv.Value.WeeklyPct).ToArray();
+        var names = ordered.Select(kv => kv.Key).ToArray();
+        var weekly = ordered.Select(kv => kv.Value.WeeklyPct).ToArray();
+        var ytd = ordered.Select(kv => kv.Value.YtdPct).ToArray();
 
-        var positions = Enumerable.Range(0, names.Length).Select(i => (double)i).ToArray();
+        // Reverse plotting order so index 0 (best performer) ends up at the top of the chart.
+        var positions = Enumerable.Range(0, names.Length).Select(i => (double)(names.Length - 1 - i)).ToArray();
 
-        var weeklyBars = new List<ScottPlot.Bar>();
-        var ytdBars = new List<ScottPlot.Bar>();
-
+        var bars = new List<ScottPlot.Bar>();
         for (int i = 0; i < names.Length; i++)
         {
-            weeklyBars.Add(new ScottPlot.Bar
+            bars.Add(new ScottPlot.Bar
             {
-                Position = positions[i] - 0.2,
+                Position = positions[i],
                 Value = weekly[i],
-                Size = 0.35,
-                FillColor = Navy,
-            });
-            ytdBars.Add(new ScottPlot.Bar
-            {
-                Position = positions[i] + 0.2,
-                Value = ytd[i],
-                Size = 0.35,
-                FillColor = Orange,
+                ValueBase = 0,
+                Size = 0.55,
+                FillColor = weekly[i] >= 0 ? Green : Red,
+                Label = $"{weekly[i]:+0.0;-0.0}%",
             });
         }
 
-        var allBars = weeklyBars.Concat(ytdBars).ToList();
-        plt.Add.Bars(allBars.ToArray());
+        var barPlot = plt.Add.Bars(bars.ToArray());
+        barPlot.Horizontal = true;
+        barPlot.ValueLabelStyle.ForeColor = TextColor;
+        barPlot.ValueLabelStyle.Bold = true;
 
-        plt.Axes.Bottom.SetTicks(positions, names);
-        plt.Axes.Bottom.TickLabelStyle.Rotation = -15;
-        plt.Axes.Left.Label.Text = "Απόδοση (%)";
+        // YTD marker overlay (the "dot" half of the range+dot idiom).
+        var ytdMarkers = plt.Add.Markers(ytd, positions, MarkerShape.FilledDiamond, 12, Gold);
+        ytdMarkers.LegendText = "YTD %";
+
+        var zeroLine = plt.Add.VerticalLine(0, 1, GridColor);
+        zeroLine.LinePattern = LinePattern.Dashed;
+
+        plt.Axes.Left.SetTicks(positions, names);
+        plt.Axes.Bottom.Label.Text = "Εβδομαδιαία απόδοση (%)";
+        plt.ShowLegend(Alignment.LowerRight);
 
         return PlotToBase64(plt, 900, 560);
     }
@@ -125,11 +133,14 @@ public class ChartGenerator
                 Value = values[i],
                 FillColor = names[i].Contains("High") ? Gold : Navy,
                 IsVisible = true,
+                Label = $"{values[i]:0.00}%",
             });
         }
 
         var barPlot = plt.Add.Bars(bars.ToArray());
         barPlot.Horizontal = true;
+        barPlot.ValueLabelStyle.ForeColor = TextColor;
+        barPlot.ValueLabelStyle.Bold = true;
 
         plt.Axes.Left.SetTicks(positions, names);
         plt.Axes.Bottom.Label.Text = "Απόδοση (%)";
@@ -158,10 +169,13 @@ public class ChartGenerator
                 Value = values[i],
                 Size = 0.5,
                 FillColor = colors[i % colors.Length],
+                Label = values[i] >= 10 ? $"{values[i]:0.0}" : $"{values[i]:0.0000}",
             });
         }
 
-        plt.Add.Bars(bars.ToArray());
+        var barPlot = plt.Add.Bars(bars.ToArray());
+        barPlot.ValueLabelStyle.ForeColor = TextColor;
+        barPlot.ValueLabelStyle.Bold = true;
         plt.Axes.Bottom.SetTicks(positions, pairs);
         plt.Axes.Left.Label.Text = "Τιμή";
 
@@ -197,11 +211,14 @@ public class ChartGenerator
                 Position = positions[i],
                 Value = values[i],
                 FillColor = color,
+                Label = $"{values[i]:0.0}%",
             });
         }
 
         var barPlot = plt.Add.Bars(bars.ToArray());
         barPlot.Horizontal = true;
+        barPlot.ValueLabelStyle.ForeColor = TextColor;
+        barPlot.ValueLabelStyle.Bold = true;
 
         plt.Axes.Left.SetTicks(positions, labels);
         plt.Axes.Bottom.Label.Text = "Τιμή (%)";
@@ -231,10 +248,13 @@ public class ChartGenerator
                 Value = values[i],
                 Size = 0.5,
                 FillColor = colors[i % colors.Length],
+                Label = $"{values[i]:0.00}",
             });
         }
 
-        plt.Add.Bars(bars.ToArray());
+        var barPlot = plt.Add.Bars(bars.ToArray());
+        barPlot.ValueLabelStyle.ForeColor = TextColor;
+        barPlot.ValueLabelStyle.Bold = true;
         plt.Axes.Bottom.SetTicks(positions, labels);
         plt.Axes.Left.Label.Text = "Τιμή (USD)";
 
