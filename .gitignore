@@ -13,3 +13,6 @@ MarketNewsApp/cache/
 MarketNewsApp/scrape_debug.txt
 MarketNewsApp/scrape_test_output.txt
 scrape_debug.txt
+MarketNewsApp/logs/
+MarketNewsApp/report_run.log
+MarketNewsApp/run_output*.txt

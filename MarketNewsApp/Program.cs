@@ -109,20 +109,13 @@ static void RunPipeline(bool dryRun = false)
             return;
         }
 
-        // ── Step 5/6: Final synthesis + market data (parallel) ───────────────────
-        Banner("Step 5/6 · Final synthesis + market data extraction (parallel)");
-        var synthesisTask = summarizer.SynthesizeAsync(perSource);
-        var dataTask      = summarizer.ExtractMarketDataAsync(cleaned);
-        Task.WhenAll(synthesisTask, dataTask).GetAwaiter().GetResult();
-        var synthesis  = synthesisTask.Result;
-        var marketData = dataTask.Result;
-        Console.WriteLine("  ✅  Synthesis and market data ready");
+        // ── Step 5/6: Final synthesis ─────────────────────────────────────────────
+        Banner("Step 5/6 · Final synthesis");
+        var synthesis = summarizer.SynthesizeAsync(perSource).GetAwaiter().GetResult();
+        Console.WriteLine("  ✅  Synthesis ready");
 
-        // ── Step 6/6: Charts + HTML template ─────────────────────────────────────
-        Banner("Step 6/6 · Charts + HTML template");
-        var chartGen    = new ChartGenerator();
-        var chartImages = chartGen.GenerateAllAsync(marketData).GetAwaiter().GetResult();
-        Console.WriteLine($"  ✅  {chartImages.Count} charts generated");
+        // ── Step 6/6: HTML template ───────────────────────────────────────────────
+        Banner("Step 6/6 · HTML template");
 
         var srcList = string.Join("\n", cleaned.Select(kv =>
             $"<li>📄 <strong>{kv.Key}</strong> — <a href=\"{kv.Value.Url}\">{kv.Value.Url}</a></li>"));
@@ -138,7 +131,7 @@ static void RunPipeline(bool dryRun = false)
         try
         {
             var pptxGen = new PptxReportGenerator();
-            pptxGen.GenerateMarketsReview(marketsReviewPath, perSource, synthesis, chartImages, reportDateStr, sinceDateStr);
+            pptxGen.GenerateMarketsReview(marketsReviewPath, perSource, synthesis, reportDateStr, sinceDateStr);
             pptxGen.GenerateSupportiveMaterial(supportiveMaterialPath, perSource, reportDateStr, sinceDateStr);
             Console.WriteLine($"  ✅  PowerPoint decks saved: {marketsReviewPath}, {supportiveMaterialPath}");
         }
@@ -152,13 +145,7 @@ static void RunPipeline(bool dryRun = false)
         if (dryRun)
         {
             var emailSender = new EmailSender();
-            var html        = emailSender.RenderHtml(aiHtml, chartImages, reportDateStr, sinceDateStr);
-
-            foreach (var (key, b64) in chartImages)
-            {
-                html = html.Replace($"cid:{key}", $"data:image/png;base64,{b64}");
-                html = html.Replace($"cid:chart_{key}", $"data:image/png;base64,{b64}");
-            }
+            var html        = emailSender.RenderHtml(aiHtml, reportDateStr, sinceDateStr);
 
             var outPath = Path.Combine(Directory.GetCurrentDirectory(), "report.html");
             File.WriteAllText(outPath, html);

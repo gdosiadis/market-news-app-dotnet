@@ -9,15 +9,6 @@ namespace MarketNewsApp.Services;
 
 public class EmailSender
 {
-    private static readonly Dictionary<string, string> ChartCids = new()
-    {
-        ["indices"] = "chart_indices",
-        ["yields"] = "chart_yields",
-        ["forex"] = "chart_forex",
-        ["macro"] = "chart_macro",
-        ["commodities"] = "chart_commodities",
-    };
-
     public void Send(string reportDate, string? marketsReviewPath = null, string? supportiveMaterialPath = null)
     {
         static string? EnvOrNull(string name)
@@ -102,7 +93,7 @@ public class EmailSender
         Console.WriteLine($"  Email sent successfully to {string.Join(", ", recipients)}");
     }
 
-    public string RenderHtml(string aiSummary, Dictionary<string, string> charts, string reportDate, string sinceDate)
+    public string RenderHtml(string aiSummary, string reportDate, string sinceDate)
     {
         var templatePath = Path.Combine(AppContext.BaseDirectory, "Templates", "email_template.html");
         if (!File.Exists(templatePath))
@@ -111,14 +102,9 @@ public class EmailSender
         var templateText = File.ReadAllText(templatePath);
         var template = Template.Parse(templateText);
 
-        var chartCids = charts.Keys
-            .Where(k => ChartCids.ContainsKey(k))
-            .ToDictionary(k => k, k => ChartCids[k]);
-
         return template.Render(new
         {
             ai_summary = aiSummary,
-            charts = chartCids,
             report_date = reportDate,
             since_date = sinceDate,
         });

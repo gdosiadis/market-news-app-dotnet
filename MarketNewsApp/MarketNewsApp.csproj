@@ -23,7 +23,6 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\OptimaMasterTemplate.pptx" />
-    <EmbeddedResource Include="Assets\echarts.min.js" />
   </ItemGroup>
 
 </Project>

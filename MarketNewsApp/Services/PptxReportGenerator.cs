@@ -10,39 +10,36 @@ using P = DocumentFormat.OpenXml.Presentation;
 namespace MarketNewsApp.Services;
 
 // Builds self-contained .pptx reports on top of "OptimaMasterTemplate.pptx" — a real
-// PowerPoint-authored Slide Master with 3 branded custom layouts ("Optima Cover",
-// "Optima Chart + Commentary", "Optima Bullets") matching Optima Bank's internal
-// "Marketing Material" deck style. Each slide we generate simply references one of these
-// layouts and fills in its placeholders (title/subtitle/chart/commentary/bullets/date) —
-// the branded background, logo banner, ribbon accents and footer text all come from the
-// layout itself, so slide-building code stays lean and any manual redesign of the visual
-// style only requires editing the template file, not this code.
+// PowerPoint-authored Slide Master with branded custom layouts ("Optima Cover",
+// "Optima Bullets") matching Optima Bank's internal "Marketing Material" deck style.
+// Each slide we generate simply references one of these layouts and fills in its
+// placeholders (title/subtitle/commentary/bullets/date) — the branded background, logo
+// banner, ribbon accents and footer text all come from the layout itself, so
+// slide-building code stays lean and any manual redesign of the visual style only
+// requires editing the template file, not this code.
 public class PptxReportGenerator
 {
     // Layout names as authored in OptimaMasterTemplate.pptx (see build script history) —
     // used to look up the right SlideLayoutPart for each slide type.
     private const string CoverLayoutName = "Optima Cover";
-    private const string ChartLayoutName = "Optima Chart + Commentary";
     private const string BulletsLayoutName = "Optima Bullets";
 
     public void Generate(
         string path,
         Dictionary<string, SourceSummary> perSource,
         string synthesisHtml,
-        Dictionary<string, string> chartImages,
         string reportDate,
         string sinceDate)
     {
-        GenerateMarketsReview(path, perSource, synthesisHtml, chartImages, reportDate, sinceDate);
+        GenerateMarketsReview(path, perSource, synthesisHtml, reportDate, sinceDate);
     }
 
-    // ── Deck 1: "Markets review" — cover, source status, then one chart+commentary slide per
-    // market-data category (indices/yields/forex/macro/commodities). ──────────────────────
+    // ── Deck 1: "Markets review" — cover, source status, then the synthesis commentary split
+    // across one or more bullet slides. ────────────────────────────────────────────────────
     public void GenerateMarketsReview(
         string path,
         Dictionary<string, SourceSummary> perSource,
         string synthesisHtml,
-        Dictionary<string, string> chartImages,
         string reportDate,
         string sinceDate)
     {
@@ -51,7 +48,6 @@ public class PptxReportGenerator
         using var doc = PresentationDocument.Open(path, true);
         var presentationPart = doc.PresentationPart!;
         var coverLayout = GetLayoutByName(presentationPart, CoverLayoutName);
-        var chartLayout = GetLayoutByName(presentationPart, ChartLayoutName);
         var bulletsLayout = GetLayoutByName(presentationPart, BulletsLayoutName);
         var slideIdList = ResetSlides(presentationPart);
 
@@ -69,25 +65,10 @@ public class PptxReportGenerator
         // ── Slide 2: Source status overview ──────────────────────────────────
         AddSlide(CreateStatusSlide(presentationPart, bulletsLayout, perSource));
 
-        // ── Slide 3+: one two-column chart+commentary slide per market-data category ────────
-        var synthesisBullets = HtmlToBullets(synthesisHtml).Take(20).ToList();
-        var categories = new (string Key, string Subtitle, string Caption)[]
-        {
-            ("indices", "Δείκτες", "Εβδομαδιαία & YTD απόδοση βασικών χρηματιστηριακών δεικτών"),
-            ("yields", "Αποδόσεις ομολόγων", "Αποδόσεις κρατικών & εταιρικών ομολόγων"),
-            ("forex", "Συνάλλαγμα", "Κινήσεις βασικών ισοτιμιών συναλλάγματος"),
-            ("macro", "Μακροοικονομικά", "Βασικοί μακροοικονομικοί δείκτες ΗΠΑ"),
-            ("commodities", "Εμπορεύματα", "Τιμές βασικών εμπορευμάτων"),
-        };
-        var chunks = SplitBullets(synthesisBullets, Math.Max(1, (int)Math.Ceiling(synthesisBullets.Count / (double)Math.Max(1, chartImages.Count)))).ToList();
-        int chunkIndex = 0;
-        foreach (var (key, subtitle, caption) in categories)
-        {
-            if (!chartImages.TryGetValue(key, out var b64)) continue;
-            var bullets = chunkIndex < chunks.Count ? chunks[chunkIndex] : new List<string>();
-            chunkIndex++;
-            AddSlide(CreateChartTextSlide(presentationPart, chartLayout, "Markets review", subtitle, caption, b64, bullets));
-        }
+        // ── Slide 3+: synthesis commentary, split into bullet slides ─────────────────────────
+        var synthesisBullets = HtmlToBullets(synthesisHtml);
+        foreach (var chunk in SplitBullets(synthesisBullets, 8))
+            AddSlide(CreateBulletSlide(presentationPart, bulletsLayout, "Markets review", "Συνθετική επισκόπηση", chunk));
 
         presentationPart.Presentation.Save();
     }
@@ -257,28 +238,6 @@ public class PptxReportGenerator
         tree.Append(shape);
     }
 
-    // Fills the "Chart"/"Bullets"-type object placeholder (idx match) with a picture instead
-    // of text — the picture inherits the placeholder's position/size from the layout.
-    private static void AddPicturePlaceholder(ShapeTree tree, SlidePart slidePart, uint id, string name, uint idx, string base64Png)
-    {
-        var imageBytes = Convert.FromBase64String(base64Png);
-        var imagePart = slidePart.AddImagePart(ImagePartType.Png);
-        using (var stream = new MemoryStream(imageBytes))
-            imagePart.FeedData(stream);
-        var rId = slidePart.GetIdOfPart(imagePart);
-
-        var picture = new P.Picture(
-            new P.NonVisualPictureProperties(
-                new P.NonVisualDrawingProperties { Id = id, Name = name },
-                new P.NonVisualPictureDrawingProperties(new A.PictureLocks { NoGrouping = true }),
-                new ApplicationNonVisualDrawingProperties(new P.PlaceholderShape { Index = idx })),
-            new P.BlipFill(
-                new A.Blip { Embed = rId },
-                new A.Stretch(new A.FillRectangle())),
-            new P.ShapeProperties(new A.PresetGeometry(new A.AdjustValueList()) { Preset = A.ShapeTypeValues.Rectangle }));
-        tree.Append(picture);
-    }
-
     // Footer (idx=11) and slide-number (idx=12) placeholders are "special" placeholders that
     // PowerPoint only renders when the slide itself carries a matching shape — the <p:hf>
     // flags alone (set in NewSlidePart) aren't enough. We add them explicitly here, mirroring
@@ -361,28 +320,6 @@ public class PptxReportGenerator
         AddTextPlaceholder(tree, 4, "Bullets", null, 1, bullets.Select(b => "❖  " + b));
 
         AddFooterAndPageNumber(tree, 6);
-        return slidePart;
-    }
-
-    // Two-column chart(left)/commentary(right) slide — layout provides the orange section
-    // title, black subtitle, orange chart caption slot, chart slot and commentary slot.
-    private static SlidePart CreateChartTextSlide(PresentationPart presentationPart, SlideLayoutPart layoutPart,
-        string sectionTitle, string subtitle, string caption, string base64Png, List<string> bullets)
-    {
-        var slidePart = NewSlidePart(presentationPart, layoutPart);
-        var tree = slidePart.Slide.CommonSlideData!.ShapeTree!;
-
-        AddTextPlaceholder(tree, 2, "Title", PlaceholderValues.Title, null, new[] { sectionTitle });
-        AddTextPlaceholder(tree, 3, "Subtitle", PlaceholderValues.Body, 13, new[] { subtitle });
-        AddTextPlaceholder(tree, 4, "ChartCaption", PlaceholderValues.Body, 14, new[] { caption });
-        AddPicturePlaceholder(tree, slidePart, 5, "Chart", 1, base64Png);
-
-        var lines = bullets.Count > 0
-            ? bullets.Select(b => "❖  " + b)
-            : new[] { "Δεν εντοπίστηκαν επιπλέον σχόλια για αυτή την κατηγορία." };
-        AddTextPlaceholder(tree, 6, "Commentary", null, 2, lines);
-
-        AddFooterAndPageNumber(tree, 7);
         return slidePart;
     }
 }
