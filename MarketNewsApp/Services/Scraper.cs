@@ -88,6 +88,12 @@ public class Scraper
         },
     ];
 
+    // Test-only entry point used by `--debug-dom` to exercise the real screenshot capture
+    // pipeline (lazy-load triggering, media filtering, blank detection, retargeting) against
+    // an already-navigated page, without needing a full SiteConfig/ScrapeSiteAsync run.
+    public static Task<List<string>> DebugCaptureScreenshotsAsync(IPage page) =>
+        CaptureScreenshotsAsync(page, new SiteConfig { Name = "debug", Url = page.Url, Selectors = [], WaitFor = "" });
+
     public async Task<Dictionary<string, ScrapedSite>> ScrapeAllAsync()
     {
         var results = new Dictionary<string, ScrapedSite>();
@@ -469,6 +475,7 @@ public class Scraper
         var seenBoxes = new HashSet<string>();
 
         await HideFixedOverlaysAsync(page);
+        await TriggerLazyLoadedImagesAsync(page);
 
         foreach (var selector in selectors)
         {
@@ -496,8 +503,13 @@ public class Scraper
 
                     if (!await HasChartOrTableMediaAsync(el)) continue;
 
-                    await el.ScrollIntoViewIfNeededAsync();
-                    var bytes = await el.ScreenshotAsync(new() { Type = ScreenshotType.Png });
+                    var target = await ResolveScreenshotTargetAsync(el);
+                    if (target is null) continue;
+
+                    await target.ScrollIntoViewIfNeededAsync();
+                    if (!await WaitForImagesToLoadAsync(target)) continue;
+
+                    var bytes = await target.ScreenshotAsync(new() { Type = ScreenshotType.Png });
                     if (IsBlankScreenshot(bytes)) continue;
                     screenshots.Add(Convert.ToBase64String(bytes));
                 }
@@ -510,6 +522,102 @@ public class Scraper
         }
 
         return screenshots;
+    }
+
+    // Some sites (e.g. BlackRock) only load a chart's actual <img> once it scrolls into
+    // view (IntersectionObserver-based lazy loading), and bundle the chart together with
+    // several unrelated paragraphs inside one oversized CMS content block. Scrolling
+    // through the whole page once before capturing anything gives every lazy image a
+    // chance to start loading, so by the time we get to each element it's more likely
+    // to already be rendered instead of still blank.
+    private static async Task TriggerLazyLoadedImagesAsync(IPage page)
+    {
+        try
+        {
+            var height = await page.EvaluateAsync<int>("() => document.body.scrollHeight");
+            const int step = 800;
+            for (var y = 0; y < height; y += step)
+            {
+                await page.EvaluateAsync("y => window.scrollTo(0, y)", y);
+                await page.WaitForTimeoutAsync(150);
+            }
+            await page.EvaluateAsync("() => window.scrollTo(0, 0)");
+            await page.WaitForTimeoutAsync(200);
+        }
+        catch
+        {
+            // Best-effort — if this fails just proceed without it.
+        }
+    }
+
+    // Picks the element to actually screenshot, which is not always the element that
+    // matched our selector:
+    //   - table/svg/canvas ARE the chart — screenshot them directly.
+    //   - A container (figure/[class*=chart] div/etc.) that wraps a table/svg/canvas
+    //     descendant: screenshot that descendant directly. These tags are inherently
+    //     self-contained, so this is always safe and avoids the container's own padding.
+    //   - A container that only wraps a raster <img>: some CMSes (e.g. BlackRock) bundle
+    //     the chart image together with several unrelated paragraphs inside one oversized
+    //     content block, so screenshotting the whole container can capture way more text
+    //     than just the chart. Only trust the container's own bounding box when it's a
+    //     reasonably tight fit around the image (chart + short caption, as on sites like
+    //     Edward Jones/Citi); otherwise screenshot the <img> element itself instead.
+    private static async Task<IElementHandle?> ResolveScreenshotTargetAsync(IElementHandle el)
+    {
+        var tagName = await el.EvaluateAsync<string>("el => el.tagName.toLowerCase()");
+        if (tagName is "table" or "svg" or "canvas") return el;
+
+        // Decorative icons (e.g. a tiny expand/collapse chevron <svg> next to a
+        // "Chart description" toggle link) can also match "svg, canvas, table" — only
+        // trust this descendant as the real chart if it's a plausible chart/table size,
+        // otherwise fall through to the container/img handling below.
+        var innerVisual = await el.QuerySelectorAsync("svg, canvas, table");
+        if (innerVisual is not null)
+        {
+            var innerBox = await innerVisual.BoundingBoxAsync();
+            if (innerBox is not null && innerBox.Width >= 150 && innerBox.Height >= 80)
+            {
+                return innerVisual;
+            }
+        }
+
+        var containerTextLen = await el.EvaluateAsync<int>("el => (el.innerText || '').length");
+        if (containerTextLen <= 400) return el;
+
+        return await el.QuerySelectorAsync("img");
+    }
+
+    // Waits briefly for any <img> within the target (or the target itself, if it IS an
+    // <img>) to finish loading (non-zero naturalWidth), so we don't email a still-blank
+    // lazy-loaded placeholder. Returns false (skip this screenshot) if nothing loads in
+    // time; true if the target has no <img> at all (e.g. it's an svg/canvas/table, which
+    // render synchronously and don't need this wait).
+    private static async Task<bool> WaitForImagesToLoadAsync(IElementHandle target)
+    {
+        try
+        {
+            var isImgItself = await target.EvaluateAsync<bool>("el => el.tagName.toLowerCase() === 'img'");
+            var hasImgDescendant = isImgItself || await target.EvaluateAsync<bool>("el => !!el.querySelector('img')");
+            if (!hasImgDescendant) return true;
+
+            return await target.EvaluateAsync<bool>(
+                @"async el => {
+                    const imgs = el.tagName.toLowerCase() === 'img' ? [el] : Array.from(el.querySelectorAll('img'));
+                    if (imgs.length === 0) return true;
+                    const waitOne = (img) => new Promise(resolve => {
+                        if (img.complete && img.naturalWidth > 0) { resolve(true); return; }
+                        const timer = setTimeout(() => resolve(img.naturalWidth > 0), 4000);
+                        img.addEventListener('load', () => { clearTimeout(timer); resolve(true); }, { once: true });
+                        img.addEventListener('error', () => { clearTimeout(timer); resolve(false); }, { once: true });
+                    });
+                    const results = await Promise.all(imgs.map(waitOne));
+                    return results.some(ok => ok);
+                }");
+        }
+        catch
+        {
+            return true; // Don't block the capture on an unexpected evaluation failure.
+        }
     }
 
     // Decides whether a matched element is actually a graph/table (and not plain text,
@@ -532,7 +640,15 @@ public class Scraper
 
             return await el.EvaluateAsync<bool>(
                 @"el => {
-                    if (el.querySelector('svg, canvas, table')) return true;
+                    // Only count a nested svg/canvas/table as real chart media if it's a
+                    // plausible chart size — decorative icons (e.g. a tiny expand/collapse
+                    // chevron next to a 'Chart description' toggle link) are also <svg> but
+                    // should not qualify.
+                    const visual = el.querySelector('svg, canvas, table');
+                    if (visual) {
+                        const r = visual.getBoundingClientRect();
+                        if (r.width >= 150 && r.height >= 80) return true;
+                    }
                     const img = el.querySelector('img');
                     if (!img) return false;
                     const text = (el.innerText || '').toLowerCase();

@@ -12,12 +12,20 @@ var rootCommand = new RootCommand("Market News AI — Daily Email Report");
 
 var nowOption = new Option<bool>("--now", "Run once and exit");
 var testOption = new Option<bool>("--test", "Dry run — save HTML, no email");
+var debugDomOption = new Option<string?>("--debug-dom", "Dump figure/chart element info for a URL and exit");
 
 rootCommand.AddOption(nowOption);
 rootCommand.AddOption(testOption);
+rootCommand.AddOption(debugDomOption);
 
-rootCommand.SetHandler((bool now, bool test) =>
+rootCommand.SetHandler(async (bool now, bool test, string? debugDomUrl) =>
 {
+    if (debugDomUrl is not null)
+    {
+        await DebugDomAsync(debugDomUrl);
+        return;
+    }
+
     if (test)
     {
         RunPipeline(dryRun: true);
@@ -50,11 +58,49 @@ rootCommand.SetHandler((bool now, bool test) =>
         }
         Thread.Sleep(30000);
     }
-}, nowOption, testOption);
+}, nowOption, testOption, debugDomOption);
 
 return rootCommand.Invoke(args);
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+static async Task DebugDomAsync(string url)
+{
+    using var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+    await using var browser = await playwright.Chromium.LaunchAsync(new()
+    {
+        Headless = true,
+        Args = ["--disable-blink-features=AutomationControlled"],
+    });
+    var context = await browser.NewContextAsync(new()
+    {
+        UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        ViewportSize = new Microsoft.Playwright.ViewportSize { Width = 1280, Height = 800 },
+        Locale = "en-US",
+    });
+    var page = await context.NewPageAsync();
+    await page.GotoAsync(url, new() { WaitUntil = Microsoft.Playwright.WaitUntilState.NetworkIdle, Timeout = 60000 });
+    await page.WaitForTimeoutAsync(2000);
+
+    // best-effort dismiss any cookie banner
+    foreach (var text in new[] { "Reject All", "Accept All", "Accept", "Agree" })
+    {
+        try
+        {
+            var btn = page.Locator($"button:has-text('{text}')").First;
+            if (await btn.IsVisibleAsync(new() { Timeout = 1000 })) { await btn.ClickAsync(); await page.WaitForTimeoutAsync(1000); break; }
+        }
+        catch { }
+    }
+
+    var shots = await MarketNewsApp.Services.Scraper.DebugCaptureScreenshotsAsync(page);
+    Console.WriteLine($"Captured {shots.Count} screenshot(s)");
+    Directory.CreateDirectory("debug_shots");
+    for (var i = 0; i < shots.Count; i++)
+    {
+        File.WriteAllBytes($"debug_shots/shot_{i}.png", Convert.FromBase64String(shots[i]));
+    }
+}
 
 static void Banner(string msg, char ch = '─')
 {
