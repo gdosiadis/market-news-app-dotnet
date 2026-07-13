@@ -67,8 +67,8 @@ static void RunPipeline(bool dryRun = false)
     var start = DateTime.Now;
     Banner($"🚀  Market News AI  —  {start:dd/MM/yyyy HH:mm}", '═');
 
-    // ── Step 1/6: Parallel Extraction ────────────────────────────────────────
-    Banner("Step 1/6 · Parallel Extraction");
+    // ── Step 1/5: Parallel Extraction ────────────────────────────────────────
+    Banner("Step 1/5 · Parallel Extraction");
     Dictionary<string, ScrapedSite> scraped;
     if (ScrapeCache.TryLoad(out var cached))
     {
@@ -79,27 +79,31 @@ static void RunPipeline(bool dryRun = false)
     {
         var scraper = new Scraper();
         scraped = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
-        Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {scraped.Values.Sum(v => v.Text.Length):N0} chars");
+        Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {scraped.Values.Sum(v => v.Text.Length):N0} chars · {scraped.Values.Sum(v => v.Screenshots.Count)} screenshots");
     }
 
-    // ── Step 2/6: Cleaning ───────────────────────────────────────────────────
-    Banner("Step 2/6 · Cleaning — deduplication & normalization");
+    // ── Step 2/5: Cleaning ───────────────────────────────────────────────────
+    Banner("Step 2/5 · Cleaning — deduplication & normalization");
     var cleaned = AiSummarizer.CleanScraped(scraped);
     Console.WriteLine($"  ✅  {cleaned.Count} sites cleaned");
 
-    // ── Step 3/6: Cache ──────────────────────────────────────────────────────
-    Banner("Step 3/6 · Cache — persisting cleaned data");
+    // ── Step 3/5: Cache ──────────────────────────────────────────────────────
+    Banner("Step 3/5 · Cache — persisting cleaned data");
     ScrapeCache.Save(cleaned);
 
-    // ── Step 4/6: Per-source AI summaries ────────────────────────────────────
-    Banner("Step 4/6 · Per-source AI summaries (parallel)");
+    // ── Step 4/5: Per-source AI summaries ────────────────────────────────────
+    Banner("Step 4/5 · Per-source AI summaries (parallel)");
+    var summaryCache = SummaryCache.Load();
+    if (summaryCache != null)
+        Console.WriteLine($"  💾  Same-day summary cache found — reusing unchanged sources, thinking only about new content");
+
     var summarizer = new AiSummarizer();
     try
     {
         Dictionary<string, SourceSummary> perSource;
         try
         {
-            perSource = summarizer.SummarizePerSourceAsync(cleaned).GetAwaiter().GetResult();
+            perSource = summarizer.SummarizePerSourceAsync(cleaned, summaryCache?.PerSource).GetAwaiter().GetResult();
             Console.WriteLine($"  ✅  {perSource.Count} per-source summaries ready");
         }
         catch (Exception ex)
@@ -109,13 +113,30 @@ static void RunPipeline(bool dryRun = false)
             return;
         }
 
-        // ── Step 5/6: Final synthesis ─────────────────────────────────────────────
-        Banner("Step 5/6 · Final synthesis");
-        var synthesis = summarizer.SynthesizeAsync(perSource).GetAwaiter().GetResult();
-        Console.WriteLine("  ✅  Synthesis ready");
+        // ── Step 5/5: Final synthesis + HTML template ─────────────────────────────
+        Banner("Step 5/5 · Final synthesis + HTML template");
 
-        // ── Step 6/6: HTML template ───────────────────────────────────────────────
-        Banner("Step 6/6 · HTML template");
+        var newPerSourceCache = cleaned.ToDictionary(
+            kv => kv.Key,
+            kv => new SummaryCache.SourceEntry(
+                SummaryCache.ComputeHash(kv.Value.Text),
+                perSource[kv.Key].Html,
+                perSource[kv.Key].Status));
+        var compositeHash = SummaryCache.ComputeCompositeHash(newPerSourceCache.Values.Select(v => v.ContentHash));
+
+        string synthesis;
+        if (summaryCache != null && summaryCache.CompositeHash == compositeHash && !string.IsNullOrWhiteSpace(summaryCache.Synthesis))
+        {
+            synthesis = summaryCache.Synthesis;
+            Console.WriteLine("  ♻️  Synthesis reused from cache — no source content changed since last run today");
+        }
+        else
+        {
+            synthesis = summarizer.SynthesizeAsync(perSource).GetAwaiter().GetResult();
+            Console.WriteLine("  ✅  Synthesis ready");
+        }
+
+        SummaryCache.Save(new SummaryCache.CachedRun(newPerSourceCache, compositeHash, synthesis));
 
         var srcList = string.Join("\n", cleaned.Select(kv =>
             $"<li>📄 <strong>{kv.Key}</strong> — <a href=\"{kv.Value.Url}\">{kv.Value.Url}</a></li>"));
@@ -124,28 +145,22 @@ static void RunPipeline(bool dryRun = false)
         var reportDateStr = DateTime.Now.ToString("dd/MM/yyyy");
         var sinceDateStr  = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
 
-        // ── PowerPoint export — two branded decks (Markets Review + Supportive Material),
-        // matching the two reference Optima decks, sent instead of a huge HTML email body ──
-        var marketsReviewPath = Path.Combine(Directory.GetCurrentDirectory(), "MarketsReview.pptx");
-        var supportiveMaterialPath = Path.Combine(Directory.GetCurrentDirectory(), "SupportiveMaterial.pptx");
-        try
-        {
-            var pptxGen = new PptxReportGenerator();
-            pptxGen.GenerateMarketsReview(marketsReviewPath, perSource, synthesis, reportDateStr, sinceDateStr);
-            pptxGen.GenerateSupportiveMaterial(supportiveMaterialPath, perSource, reportDateStr, sinceDateStr);
-            Console.WriteLine($"  ✅  PowerPoint decks saved: {marketsReviewPath}, {supportiveMaterialPath}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"  ⚠️  PowerPoint generation failed: {ex.Message}");
-            marketsReviewPath = null!;
-            supportiveMaterialPath = null!;
-        }
-
         if (dryRun)
         {
             var emailSender = new EmailSender();
             var html        = emailSender.RenderHtml(aiHtml, reportDateStr, sinceDateStr);
+
+            // Local file preview can't resolve cid: references (that's an email-client
+            // mechanism) — inline the same screenshot bytes as data URIs instead so
+            // report.html looks the same as what actually gets sent.
+            foreach (var (sourceName, summary) in perSource)
+            {
+                for (var i = 0; i < summary.Screenshots.Count; i++)
+                {
+                    var cid = AiSummarizer.ScreenshotCid(sourceName, i);
+                    html = html.Replace($"cid:{cid}", $"data:image/png;base64,{summary.Screenshots[i]}");
+                }
+            }
 
             var outPath = Path.Combine(Directory.GetCurrentDirectory(), "report.html");
             File.WriteAllText(outPath, html);
@@ -156,7 +171,7 @@ static void RunPipeline(bool dryRun = false)
             try
             {
                 var emailSender = new EmailSender();
-                emailSender.Send(reportDateStr, marketsReviewPath, supportiveMaterialPath);
+                emailSender.Send(aiHtml, perSource);
             }
             catch (Exception ex)
             {

@@ -1,5 +1,8 @@
 using Microsoft.Playwright;
 using MarketNewsApp.Models;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
 
 namespace MarketNewsApp.Services;
 
@@ -74,6 +77,11 @@ public class Scraper
         {
             Name = "Citi Market Insights",
             Url = "https://marketinsights.citi.com/Market-Commentary/Weekly-Market-Update/index.html",
+            // The index page above is only a list of article teasers ("chips") with no
+            // chart/table content at all — the real weekly analysis (with "This Week in
+            // Charts" figures and market-data tables) lives on a separate, dynamically
+            // named article page linked from the first chip. Follow it before extracting.
+            FollowFirstLinkSelector = "#articles-list .chip h2 a",
             Selectors = ["article", "main", ".content-area", "h1", "h2", "h3", "p"],
             WaitFor = "body",
             Timeout = 25000,
@@ -181,6 +189,44 @@ public class Scraper
                 diag.Add($"wait-for selector '{site.WaitFor}' timed out (page may not have hydrated)");
             }
 
+            // Some sites configure a landing/list page as their Url because the real article
+            // (with the actual analysis text and chart figures) lives at a separate,
+            // dynamically-named URL only reachable via a link from that landing page.
+            if (!string.IsNullOrWhiteSpace(site.FollowFirstLinkSelector))
+            {
+                try
+                {
+                    var link = await page.QuerySelectorAsync(site.FollowFirstLinkSelector);
+                    var href = link is null ? null : await link.GetAttributeAsync("href");
+                    if (!string.IsNullOrWhiteSpace(href))
+                    {
+                        // hrefs are often relative (e.g. "../../Market-Commentary/...") — resolve
+                        // against the current page URL since GotoAsync won't do it implicitly.
+                        var absoluteUrl = Uri.TryCreate(new Uri(page.Url), href, out var resolved)
+                            ? resolved.ToString()
+                            : href;
+                        await page.GotoAsync(absoluteUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
+                        diag.Add($"followed link '{site.FollowFirstLinkSelector}' → {page.Url}");
+                        try
+                        {
+                            await page.WaitForSelectorAsync(site.WaitFor, new() { Timeout = 8000 });
+                        }
+                        catch (TimeoutException)
+                        {
+                            diag.Add($"wait-for selector '{site.WaitFor}' timed out on followed article page");
+                        }
+                    }
+                    else
+                    {
+                        diag.Add($"follow-link selector '{site.FollowFirstLinkSelector}' matched no href — staying on landing page");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    diag.Add($"follow-link step failed ({ex.Message}) — staying on landing page");
+                }
+            }
+
             // Many sites gate real content behind a cookie/legal/consent modal (e.g. BlackRock's
             // "Terms and Conditions" gate) — dismiss it so extraction reaches the actual article.
             var dismissed = await DismissOverlaysAsync(page);
@@ -236,6 +282,28 @@ public class Scraper
                     site.ExcludeSelectors);
                 diag.Add($"removed {removedCount} noise element(s) via exclude selectors: {string.Join(", ", site.ExcludeSelectors)}");
             }
+
+            // Capture chart/table elements as screenshots straight off the live page — these
+            // are embedded in the email as-is (not AI-rendered), so what the recipient sees
+            // is an exact visual copy of what the source actually published. Re-check for
+            // consent/cookie overlays right before capturing: some sites render their cookie
+            // banner with a delay (after the initial dismiss pass already ran), and a banner
+            // still on-screen at capture time would otherwise show up baked into the screenshot.
+            var lateOverlay = await DismissOverlaysAsync(page);
+            if (lateOverlay is not null)
+                diag.Add($"dismissed late-appearing overlay via '{lateOverlay}' button (pre-screenshot check)");
+
+            // Beyond cookie/consent banners, sites often float unrelated promo widgets
+            // (webcast CTAs, newsletter signups, video players) on top of the real
+            // chart/table content. Close whatever obstruction is there — via an X/close
+            // button or any dismiss control found — so it doesn't get baked into the
+            // screenshot.
+            var closedWidgets = await DismissObstructingWidgetsAsync(page);
+            if (closedWidgets > 0)
+                diag.Add($"closed {closedWidgets} obstructing widget(s) before screenshots");
+
+            var screenshots = await CaptureScreenshotsAsync(page, site);
+            diag.Add($"captured {screenshots.Count} chart/table screenshot(s)");
 
             var parts = new List<string>();
             foreach (var selector in site.Selectors)
@@ -308,9 +376,10 @@ public class Scraper
 
             return (site.Name, new ScrapedSite
             {
-                Url = site.Url,
+                Url = page.Url,
                 Text = string.IsNullOrWhiteSpace(cleanedText) ? $"[{site.Name}: no content extracted]" : cleanedText,
-                Diagnostics = string.Join(" | ", diag)
+                Diagnostics = string.Join(" | ", diag),
+                Screenshots = screenshots
             });
         }
         catch (TimeoutException ex)
@@ -327,6 +396,291 @@ public class Scraper
         {
             await context.CloseAsync();
         }
+    }
+
+    // Generic selectors for chart/table elements, used when a SiteConfig doesn't specify its
+    // own ScreenshotSelectors override. Broad on purpose (charts are implemented very
+    // differently across sites — SVG, canvas, plain <img>, or styled <table> markup) —
+    // size filtering + the media/text checks in CaptureScreenshotsAsync weed out small
+    // icons/logos and non-visual (pure text) matches.
+    //
+    // NOTE: bare "figure" is intentionally NOT in this list — <figure> is used for both
+    // real data charts AND decorative photos/pull-quotes across these sites, and there's
+    // no reliable selector-only way to tell them apart. CaptureScreenshotsAsync instead
+    // requires a figure to contain real chart media (svg/canvas/table) or an image with a
+    // caption (typical of a data chart's "Source: ..." line) before accepting it.
+    private static readonly string[] DefaultScreenshotSelectors =
+    [
+        "table",
+        "svg",
+        "canvas",
+        "figure",
+        "[class*='chart' i]",
+        "[class*='graph' i]",
+        "[id*='chart' i]",
+    ];
+
+    private const int MaxScreenshotsPerSite = 6;
+
+    // Screenshots chart/table elements directly off the live, rendered page so the email
+    // shows an exact visual copy of what the source published — no AI re-rendering involved.
+    // Matches are de-duplicated by bounding box (broad selectors like "svg" and "table" often
+    // overlap the same element) and filtered by minimum size to skip decorative icons/logos.
+    //
+    // Two extra guards keep screenshots limited to ONLY graphs/tables (never plain text) and
+    // never blank/empty:
+    //  1. HasChartOrTableMediaAsync — rejects an element unless it IS a table/svg/canvas, or
+    //     CONTAINS one, or (for a bare <figure>/chart-class container) has an <img> together
+    //     with a caption — this filters out pull-quotes, photo figures, and paragraph text
+    //     blocks that happened to match a broad class-name selector.
+    //  2. IsBlankScreenshot — decodes the captured PNG and rejects it if it's essentially a
+    //     single flat color (an unloaded chart placeholder, empty ad slot, etc.).
+    // Sticky/fixed-position banners (promo bars, sticky nav headers, cookie-preference tabs
+    // that never fully close, etc.) sit on top of the page's normal scroll flow, so even
+    // after DismissObstructingWidgetsAsync closes actual popups, one of these can still visibly
+    // overlap a chart/table when Playwright scrolls it into view for a screenshot (e.g. a
+    // "Learn More" promo bar drawn over the top of a chart). Rather than trying to enumerate
+    // every possible promo-bar selector per site, just hide anything CSS-fixed/sticky right
+    // before capturing screenshots — nothing in that layer is ever the chart/table itself.
+    private static async Task HideFixedOverlaysAsync(IPage page)
+    {
+        try
+        {
+            await page.EvaluateAsync(
+                @"() => {
+                    document.querySelectorAll('body *').forEach(el => {
+                        const pos = getComputedStyle(el).position;
+                        if (pos === 'fixed' || pos === 'sticky') {
+                            el.style.setProperty('display', 'none', 'important');
+                        }
+                    });
+                }");
+        }
+        catch
+        {
+            // Best-effort — if this fails (e.g. navigation in progress) just proceed without it.
+        }
+    }
+
+    private static async Task<List<string>> CaptureScreenshotsAsync(IPage page, SiteConfig site)
+    {
+        var screenshots = new List<string>();
+        var selectors = site.ScreenshotSelectors.Length > 0 ? site.ScreenshotSelectors : DefaultScreenshotSelectors;
+        var seenBoxes = new HashSet<string>();
+
+        await HideFixedOverlaysAsync(page);
+
+        foreach (var selector in selectors)
+        {
+            if (screenshots.Count >= MaxScreenshotsPerSite) break;
+            IReadOnlyList<IElementHandle> elements;
+            try
+            {
+                elements = await page.QuerySelectorAllAsync(selector);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var el in elements)
+            {
+                if (screenshots.Count >= MaxScreenshotsPerSite) break;
+                try
+                {
+                    var box = await el.BoundingBoxAsync();
+                    if (box is null || box.Width < 150 || box.Height < 80) continue;
+
+                    var key = $"{Math.Round(box.X)}_{Math.Round(box.Y)}_{Math.Round(box.Width)}_{Math.Round(box.Height)}";
+                    if (!seenBoxes.Add(key)) continue;
+
+                    if (!await HasChartOrTableMediaAsync(el)) continue;
+
+                    await el.ScrollIntoViewIfNeededAsync();
+                    var bytes = await el.ScreenshotAsync(new() { Type = ScreenshotType.Png });
+                    if (IsBlankScreenshot(bytes)) continue;
+                    screenshots.Add(Convert.ToBase64String(bytes));
+                }
+                catch
+                {
+                    // Element may have detached, be off-screen, or fail to render (e.g. zero-
+                    // opacity) — skip it rather than aborting the whole capture pass.
+                }
+            }
+        }
+
+        return screenshots;
+    }
+
+    // Decides whether a matched element is actually a graph/table (and not plain text,
+    // a pull-quote, or a decorative photo) before we bother screenshotting it.
+    //   - <table>/<svg>/<canvas> themselves always qualify — they ARE the chart/table.
+    //   - Anything else (a "figure" tag or a "[class*=chart/graph]" container div) only
+    //     qualifies if it contains a real table/svg/canvas descendant, OR contains an <img>
+    //     AND the caption/text explicitly cites a data source (e.g. "Source: ...",
+    //     "Chart: ...", "Data: ..."). A bare <figcaption> is NOT enough on its own — news
+    //     photos (e.g. Bloomberg's oil-tank photo) commonly have a figcaption too, but it's
+    //     a photo credit ("Photographer: X/Bloomberg"), not a data citation. Requiring the
+    //     explicit source/chart/data keyword is what actually distinguishes a data chart
+    //     figure from a decorative photo figure.
+    private static async Task<bool> HasChartOrTableMediaAsync(IElementHandle el)
+    {
+        try
+        {
+            var tagName = await el.EvaluateAsync<string>("el => el.tagName.toLowerCase()");
+            if (tagName is "table" or "svg" or "canvas") return true;
+
+            return await el.EvaluateAsync<bool>(
+                @"el => {
+                    if (el.querySelector('svg, canvas, table')) return true;
+                    const img = el.querySelector('img');
+                    if (!img) return false;
+                    const text = (el.innerText || '').toLowerCase();
+                    return text.includes('source:') || text.includes('source ')
+                        || text.includes('chart:') || text.includes('data:');
+                }");
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Detects near-blank/empty screenshots (e.g. an unloaded chart placeholder, an empty
+    // ad slot, or a chart container that rendered with no data yet) so we don't email a
+    // useless flat-color image. Downsamples to a small grid and buckets pixel colors —
+    // a real chart/table has many distinct shades (gridlines, bars, borders, text); a
+    // blank placeholder collapses to essentially one or two colors.
+    private static bool IsBlankScreenshot(byte[] pngBytes)
+    {
+        try
+        {
+            using var image = Image.Load<Rgba32>(pngBytes);
+            image.Mutate(ctx => ctx.Resize(32, 32));
+
+            var seenColorBuckets = new HashSet<int>();
+            image.ProcessPixelRows(accessor =>
+            {
+                for (var y = 0; y < accessor.Height; y++)
+                {
+                    var row = accessor.GetRowSpan(y);
+                    for (var x = 0; x < row.Length; x++)
+                    {
+                        var p = row[x];
+                        // Bucket similar shades together (round to nearest 16 per channel) so
+                        // anti-aliasing/compression noise doesn't count as real "variety".
+                        var bucket = ((p.R / 16) << 16) | ((p.G / 16) << 8) | (p.B / 16);
+                        seenColorBuckets.Add(bucket);
+                    }
+                }
+            });
+
+            return seenColorBuckets.Count <= 2;
+        }
+        catch
+        {
+            // If we can't decode/analyze it for any reason, don't block on it — err on the
+            // side of keeping the screenshot rather than silently dropping real content.
+            return false;
+        }
+    }
+
+    // Generic close-button patterns for floating/sticky promo widgets, video overlays, and
+    // newsletter/webcast popups that can sit on top of chart/table content (distinct from
+    // the cookie/consent overlays handled by DismissOverlaysAsync). We don't care *how* the
+    // obstruction disappears — clicking any close/X/dismiss control is fine as long as it's
+    // gone before the screenshot is taken.
+    private static readonly string[] CloseButtonSelectors =
+    [
+        "[aria-label='Close' i]",
+        "[aria-label='Dismiss' i]",
+        "[aria-label='Close dialog' i]",
+        "[aria-label='Close modal' i]",
+        "[aria-label='Close this' i]",
+        "[title='Close' i]",
+        "button[class*='close' i]",
+        "[role='button'][class*='close' i]",
+        "[class*='close' i][class*='button' i]",
+        "button:text-is('×')",
+        "button:text-is('✕')",
+        "button:text-is('X')",
+    ];
+
+    private static readonly string[] CloseButtonTexts =
+    [
+        "No Thanks", "No thanks", "Not Now", "Not now", "Maybe Later", "Maybe later",
+        "Skip", "Dismiss", "Close",
+    ];
+
+    // Builds a Locator matching any of the given tag/attribute selectors that contains the
+    // target button text. Short, generic single words (e.g. "OK", "Close", "Agree") use an
+    // EXACT whole-element-text match (":text-is") — otherwise a plain substring match would
+    // also fire on unrelated text elsewhere that merely CONTAINS those letters (e.g. "OK" is
+    // a literal substring of "Book"/"Look"/"Broker"), which previously caused a wrong click
+    // and navigated away from the real article. Longer, multi-word phrases (e.g. "Continue
+    // Without Accepting") are matched with a substring search (":has-text") instead, since
+    // real buttons for those often include extra icon/screen-reader text around the visible
+    // label that would fail an exact match, while the specific phrase itself is far too long
+    // to accidentally collide with unrelated text.
+    private static ILocator BuildButtonTextLocator(IPage page, string text, params string[] tagSelectors)
+    {
+        var useExactMatch = !text.Contains(' ') && text.Length <= 8;
+        var pseudo = useExactMatch ? "text-is" : "has-text";
+        var combined = string.Join(", ", tagSelectors.Select(tag => $"{tag}:{pseudo}('{text}')"));
+        return page.Locator(combined).First;
+    }
+
+    // Best-effort removal of non-consent obstructions (promo widgets, sticky CTAs, video
+    // overlays) that can float on top of chart/table content. Runs a handful of passes
+    // since closing one widget can reveal another stacked behind it; stops as soon as a
+    // pass finds nothing left to close.
+    private static async Task<int> DismissObstructingWidgetsAsync(IPage page)
+    {
+        var closedCount = 0;
+        for (var pass = 0; pass < 4; pass++)
+        {
+            var closedThisPass = false;
+
+            foreach (var selector in CloseButtonSelectors)
+            {
+                try
+                {
+                    var button = page.Locator(selector).First;
+                    if (await button.IsVisibleAsync(new() { Timeout = 500 }))
+                    {
+                        await ClickWithJsFallbackAsync(button);
+                        await page.WaitForTimeoutAsync(300);
+                        closedCount++;
+                        closedThisPass = true;
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            if (!closedThisPass)
+            {
+                foreach (var text in CloseButtonTexts)
+                {
+                    try
+                    {
+                        var button = BuildButtonTextLocator(page, text, "button", "[role='button']");
+                        if (await button.IsVisibleAsync(new() { Timeout = 500 }))
+                        {
+                            await ClickWithJsFallbackAsync(button);
+                            await page.WaitForTimeoutAsync(300);
+                            closedCount++;
+                            closedThisPass = true;
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (!closedThisPass) break;
+        }
+        return closedCount;
     }
 
     // Simulates plausible human interaction (mouse movement + gradual scrolling) to help
@@ -362,8 +716,20 @@ public class Scraper
     }
 
     // Best-effort dismissal of cookie/legal/terms consent overlays that block the real
-    // content underneath (e.g. BlackRock's "accept Terms and Conditions" gate). Tries a
-    // handful of common button labels; silently does nothing if none are found.
+    // content underneath (e.g. BlackRock's "accept Terms and Conditions" gate).
+    //
+    // Preference order: for pure cookie-consent banners we prefer clicking a reject/decline
+    // option first — so screenshots don't end up with leftover cookie banners/consent chrome
+    // visible in them — and only fall back to an accept-style button when no reject option
+    // exists (many legal/institutional-investor disclaimer gates, e.g. JPMorgan, only offer
+    // an "accept" control, since declining would just re-block the article content).
+    private static readonly string[] RejectButtonTexts =
+    [
+        "Reject All", "Reject all", "Reject All Cookies", "Decline All", "Decline all",
+        "Decline", "Reject", "I Decline", "Do Not Accept", "Refuse All", "Refuse all",
+        "Only Necessary", "Necessary Only", "Necessary only", "Continue Without Accepting",
+    ];
+
     private static readonly string[] ConsentButtonTexts =
     [
         "Accept All", "Accept all", "Accept All Cookies", "I Accept", "I Agree",
@@ -376,6 +742,27 @@ public class Scraper
 
     private static async Task<string?> DismissOverlaysAsync(IPage page)
     {
+        // Reject/decline controls are only matched against real <button>/role="button"
+        // elements — NOT <a> links. Cookie-consent "reject" wording can coincidentally
+        // match unrelated navigation links elsewhere on the page (e.g. a footer/legal
+        // link containing the word "Decline"), which would navigate away from the
+        // article entirely. Genuine cookie-banner reject controls are essentially
+        // always real buttons, so this restriction is safe and avoids that failure mode.
+        foreach (var text in RejectButtonTexts)
+        {
+            try
+            {
+                var button = BuildButtonTextLocator(page, text, "button", "[role='button']");
+                if (await button.IsVisibleAsync(new() { Timeout = 800 }))
+                {
+                    await ClickWithJsFallbackAsync(button);
+                    await page.WaitForTimeoutAsync(500);
+                    return text;
+                }
+            }
+            catch { }
+        }
+
         foreach (var text in ConsentButtonTexts)
         {
             try
@@ -383,9 +770,7 @@ public class Scraper
                 // Some sites render the accept control as a link or ARIA role="button"
                 // <div>/<span> rather than a real <button> element (e.g. JPMorgan's
                 // disclaimer gate), so check all three shapes, not just <button>.
-                var button = page
-                    .Locator($"button:has-text('{text}'), a:has-text('{text}'), [role='button']:has-text('{text}')")
-                    .First;
+                var button = BuildButtonTextLocator(page, text, "button", "a", "[role='button']");
                 if (await button.IsVisibleAsync(new() { Timeout = 800 }))
                 {
                     await ClickWithJsFallbackAsync(button);

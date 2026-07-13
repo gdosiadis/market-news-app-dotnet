@@ -1,20 +1,5 @@
 namespace MarketNewsApp.Models;
 
-public class MarketData
-{
-    public Dictionary<string, IndexData> Indices { get; set; } = new();
-    public Dictionary<string, double> Yields { get; set; } = new();
-    public Dictionary<string, double> Forex { get; set; } = new();
-    public Dictionary<string, double> Commodities { get; set; } = new();
-    public Dictionary<string, double> Macro { get; set; } = new();
-}
-
-public class IndexData
-{
-    public double WeeklyPct { get; set; }
-    public double YtdPct { get; set; }
-}
-
 public class SiteConfig
 {
     public required string Name { get; set; }
@@ -38,6 +23,20 @@ public class SiteConfig
     // crawlers even after the interactive gate is accepted, and it leaks into every
     // selector-based extraction otherwise).
     public string[] ExcludeSelectors { get; set; } = [];
+
+    // CSS selectors identifying chart/table elements to capture as screenshots (instead of
+    // AI-rendered charts). Empty means fall back to Scraper's generic default selector set
+    // (table, svg, canvas, [class*=chart], etc.) — override per-site only when the defaults
+    // pick up the wrong elements (e.g. too many decorative icons matching "svg").
+    public string[] ScreenshotSelectors { get; set; } = [];
+
+    // CSS selector for a link to follow immediately after the initial page load — used for
+    // sites whose configured Url is an article-list/landing page (e.g. Citi's weekly-update
+    // index) rather than the actual article, so the real analysis text and chart figures
+    // live on a separate, dynamically-named page reachable only via a link on the landing
+    // page. When set, the scraper clicks the first matching link and re-runs the rest of
+    // the extraction (overlay dismissal, screenshots, text selectors) against that page.
+    public string? FollowFirstLinkSelector { get; set; }
 }
 
 public class ScrapedSite
@@ -50,6 +49,11 @@ public class ScrapedSite
     // Populated by Scraper regardless of success/failure so failures are diagnosable
     // without re-running with extra logging.
     public string Diagnostics { get; set; } = "";
+
+    // Base64-encoded PNG screenshots of chart/table elements captured directly from the
+    // live page (not AI-rendered) — these are embedded as-is in the email so charts/tables
+    // are always an exact visual copy of what the source actually published.
+    public List<string> Screenshots { get; set; } = [];
 
     // True when the scrape actually produced usable content. Failed scrapes store a
     // "[Site: reason]"-style placeholder in Text and/or a "CAUSE:" marker in Diagnostics —
@@ -69,4 +73,5 @@ public enum SourceStatus
     Error,          // AI call threw an exception
 }
 
-public record SourceSummary(string Html, SourceStatus Status, string Url);
+public record SourceSummary(string Html, SourceStatus Status, string Url, IReadOnlyList<string> Screenshots);
+

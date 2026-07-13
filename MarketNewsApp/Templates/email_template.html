@@ -106,6 +106,18 @@
     border: 1px solid #21262d;
   }
 
+  /* Per-source page screenshots (charts/tables captured verbatim from the live site) */
+  .screenshot-block {
+    margin: 10px 0 20px;
+    text-align: center;
+  }
+  .screenshot-block img {
+    max-width: 100%;
+    border-radius: 8px;
+    border: 1px solid #21262d;
+    margin-top: 10px;
+  }
+
   /* Tables */
   .market-table {
     width: 100%;
@@ -224,48 +236,8 @@
     <span class="source-pill">Citi</span>
   </div>
 
-  <!-- Per-source AI Sections -->
+  <!-- Per-source AI Sections (screenshots of charts/tables are embedded inline within each source's section) -->
   {{ ai_summary }}
-
-  <!-- Chart: Indices -->
-  {{ if charts.indices }}
-  <div class="chart-section">
-    <h2>Αποδοση Χρηματιστηριακων Δεικτων</h2>
-    <img src="cid:{{ charts.indices }}" alt="Δείκτες" style="max-width:100%;border-radius:8px;">
-  </div>
-  {{ end }}
-
-  <!-- Chart: Yields -->
-  {{ if charts.yields }}
-  <div class="chart-section">
-    <h2>Αποδοσεις Ομολογων</h2>
-    <img src="cid:{{ charts.yields }}" alt="Ομόλογα" style="max-width:100%;border-radius:8px;">
-  </div>
-  {{ end }}
-
-  <!-- Chart: Forex -->
-  {{ if charts.forex }}
-  <div class="chart-section">
-    <h2>Ισοτιμιες Συναλλαγματος</h2>
-    <img src="cid:{{ charts.forex }}" alt="Συνάλλαγμα" style="max-width:100%;border-radius:8px;">
-  </div>
-  {{ end }}
-
-  <!-- Chart: Macro -->
-  {{ if charts.macro }}
-  <div class="chart-section">
-    <h2>Μακροοικονομικοι Δεικτες</h2>
-    <img src="cid:{{ charts.macro }}" alt="Μακρο" style="max-width:100%;border-radius:8px;">
-  </div>
-  {{ end }}
-
-  <!-- Chart: Commodities -->
-  {{ if charts.commodities }}
-  <div class="chart-section">
-    <h2>Εμπορευματα</h2>
-    <img src="cid:{{ charts.commodities }}" alt="Εμπορεύματα" style="max-width:100%;border-radius:8px;">
-  </div>
-  {{ end }}
 
   <!-- Disclaimer -->
   <div class="alert">

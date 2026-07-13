@@ -3,7 +3,7 @@
 Αυτόματη εφαρμογή σε .NET 8 που κάθε μέρα:
 1. **Αντλεί** ειδήσεις από 7 κορυφαίους χρηματοοικονομικούς οίκους με Playwright
 2. **Συνοψίζει** στα Ελληνικά μέσω Groq AI ή Azure OpenAI (Azure AI Foundry)
-3. **Δημιουργεί** γραφήματα (δείκτες, ομόλογα, συνάλλαγμα, μακρο) με ScottPlot
+3. **Καταγράφει** screenshots γραφημάτων/πινάκων απευθείας από τις σελίδες-πηγές (χωρίς AI rendering)
 4. **Αποστέλλει** HTML email μέσω Gmail (MailKit)
 
 ## Πηγές
@@ -67,17 +67,40 @@ dotnet run
 MarketNewsApp/
 ├── Program.cs               # Orchestrator + Scheduler (top-level statements)
 ├── Services/
-│   ├── Scraper.cs           # Playwright async scraper
-│   ├── AiSummarizer.cs     # Groq AI (ελληνική σύνοψη + εξαγωγή δεδομένων)
-│   ├── ChartGenerator.cs   # ScottPlot γραφήματα
+│   ├── Scraper.cs           # Playwright async scraper (+ chart/table screenshot capture)
+│   ├── AiSummarizer.cs     # Groq AI (ελληνική σύνοψη ανά πηγή + συνθετική επισκόπηση)
+│   ├── ScrapeCache.cs      # Ημερήσια cache του scraped/cleaned περιεχομένου
+│   ├── SummaryCache.cs     # Ημερήσια cache των AI summaries + synthesis
 │   └── EmailSender.cs      # Gmail SMTP αποστολή (MailKit)
 ├── Models/
-│   └── MarketData.cs       # Data models
+│   └── Models.cs            # Data models
 ├── Templates/
 │   └── email_template.html # HTML email template (Scriban)
+├── cache/                   # (regenerated) daily scrape + summary cache — git-ignored
 ├── MarketNewsApp.csproj
 └── .env.example
 ```
+
+## Ημερήσιο Cache (αποφυγή επανάληψης)
+
+Όταν τρέξει η εφαρμογή μία φορά μέσα στην ημέρα, αποθηκεύει:
+- `cache/{ημερομηνία}.json` — το scraped/cleaned περιεχόμενο ανά πηγή
+- `cache/{ημερομηνία}-summary.json` — τα AI summaries ανά πηγή + τη συνθετική επισκόπηση, μαζί με ένα hash του περιεχομένου κάθε πηγής
+
+Σε επόμενη εκτέλεση **την ίδια ημέρα** (π.χ. `--test` ή `--now` ξανά):
+- Αν το scrape cache υπάρχει, δεν ξαναγίνεται scraping.
+- Για κάθε πηγή, αν το περιεχόμενό της δεν έχει αλλάξει (ίδιο hash), το AI summary **επαναχρησιμοποιείται** αντί να ξαναπαραχθεί — καλείται το AI μόνο για πηγές με νέο/διαφορετικό περιεχόμενο.
+- Αν καμία πηγή δεν άλλαξε, επαναχρησιμοποιείται και η τελική συνθετική επισκόπηση, χωρίς νέα κλήση AI.
+
+Αν κάποια πηγή είχε αποτύχει (π.χ. timeout), το cache της ημέρας αγνοείται αυτόματα ώστε να μη «παγώσει» ένα κακό αποτέλεσμα για όλη τη μέρα.
+
+## Screenshots γραφημάτων/πινάκων
+
+Τα γραφήματα και οι πίνακες στο email είναι **αποκλειστικά screenshots** που τραβιούνται απευθείας από τις ζωντανές σελίδες (όχι AI-generated) — έτσι είναι πάντα ακριβές αντίγραφο του τι δημοσίευσε η πηγή. Ο scraper ψάχνει αυτόματα για `table`, `svg`, `canvas`, `figure` και στοιχεία με class/id που περιέχει "chart"/"graph".
+
+Για πηγές όπου το configured URL είναι λίστα άρθρων (π.χ. Citi) αντί για το ίδιο το άρθρο, χρησιμοποιείται `SiteConfig.FollowFirstLinkSelector` ώστε ο scraper να ακολουθεί αυτόματα το πρώτο link πριν τραβήξει screenshots/κείμενο.
+
+Πριν από κάθε screenshot, ο scraper προσπαθεί αυτόματα να **απορρίψει** (reject/decline) τυχόν cookie-consent banner, ώστε να μην εμφανίζεται μέσα στο στιγμιότυπο. Ελέγχει πρώτα για κουμπιά τύπου "Reject All"/"Decline"/"Only Necessary" κ.λπ. (μόνο πραγματικά `<button>`/`role="button"` στοιχεία, όχι links, ώστε να μην κάνει λάθος πλοήγηση σε άσχετο link) και μόνο αν δεν βρεθεί τέτοιο κουμπί καταφεύγει σε "Accept"-style κουμπί (χρειάζεται π.χ. για νομικά/institutional-investor gates όπως του JPMorgan, που δεν προσφέρουν επιλογή απόρριψης). Ο έλεγχος γίνεται δύο φορές — μία στην αρχή και μία ακριβώς πριν το screenshot — ώστε να πιάνει και banners που εμφανίζονται με καθυστέρηση.
 
 ## Gmail App Password
 
@@ -91,7 +114,6 @@ MarketNewsApp/
 - .NET 8
 - Microsoft.Playwright (browser automation)
 - Groq API (AI summarization via HTTP)
-- ScottPlot 5 (chart generation)
 - MailKit (SMTP email)
 - Scriban (HTML templating)
 - DotNetEnv (.env file loading)

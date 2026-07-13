@@ -84,14 +84,20 @@ public class AiSummarizer : IAsyncDisposable
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(180);
             var cleaned = string.Join("\n", lines);
-            result[name] = new ScrapedSite { Url = site.Url, Text = cleaned, Diagnostics = site.Diagnostics };
+            result[name] = new ScrapedSite { Url = site.Url, Text = cleaned, Diagnostics = site.Diagnostics, Screenshots = site.Screenshots };
             Console.WriteLine($"  🧹  {name}: {site.Text.Length:N0} → {cleaned.Length:N0} chars");
         }
         return result;
     }
 
     // ── Step 4: Per-source summaries (parallel) ───────────────────────────────
-    public async Task<Dictionary<string, SourceSummary>> SummarizePerSourceAsync(Dictionary<string, ScrapedSite> sites)
+    // `previousCache` (optional) holds the per-source result of a previous same-day run,
+    // keyed by source name with a content hash. Sources whose cleaned text hash matches
+    // the cached one are reused verbatim — only genuinely new/changed content triggers
+    // an AI call.
+    public async Task<Dictionary<string, SourceSummary>> SummarizePerSourceAsync(
+        Dictionary<string, ScrapedSite> sites,
+        Dictionary<string, SummaryCache.SourceEntry>? previousCache = null)
     {
         Console.WriteLine($"  🤖  Using {ProviderName}...");
         var today = DateTime.Now.ToString("dd/MM/yyyy");
@@ -123,6 +129,18 @@ public class AiSummarizer : IAsyncDisposable
         var siteTasks = siteList.Select(async (kv, idx) =>
         {
             var (name, info) = (kv.Key, kv.Value);
+            var contentHash = SummaryCache.ComputeHash(info.Text);
+
+            if (previousCache != null &&
+                previousCache.TryGetValue(name, out var cachedEntry) &&
+                cachedEntry.ContentHash == contentHash)
+            {
+                statuses[idx] = cachedEntry.Status;
+                sections[idx] = cachedEntry.Html;
+                Console.WriteLine($"     ♻️  {name} — reused cached summary (unchanged content)");
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(info.Text) || info.Text.StartsWith("["))
             {
                 statuses[idx] = SourceStatus.Blocked;
@@ -213,7 +231,7 @@ public class AiSummarizer : IAsyncDisposable
 
         var result = new Dictionary<string, SourceSummary>(siteList.Count);
         for (int i = 0; i < siteList.Count; i++)
-            result[siteList[i].Key] = new SourceSummary(sections[i] ?? "", statuses[i], siteList[i].Value.Url);
+            result[siteList[i].Key] = new SourceSummary(sections[i] ?? "", statuses[i], siteList[i].Value.Url, siteList[i].Value.Screenshots);
 
         PrintStatusSummary(result);
         return result;
@@ -390,10 +408,37 @@ public class AiSummarizer : IAsyncDisposable
             """;
 
         var parts = new List<string> { intro, synthesis };
-        parts.AddRange(perSource.Values.Where(s => !string.IsNullOrEmpty(s.Html)).Select(s => s.Html));
+        foreach (var (name, summary) in perSource)
+        {
+            if (string.IsNullOrEmpty(summary.Html)) continue;
+            parts.Add(summary.Html);
+            if (summary.Screenshots.Count > 0)
+                parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
+        }
         parts.Add(footer);
         return string.Join("\n", parts);
     }
+
+    // Renders a source's page screenshots (charts/tables captured verbatim from the live
+    // site, not AI-rendered) as inline images. The <img> src is a cid: placeholder resolved
+    // by EmailSender when it attaches the matching screenshot bytes as a linked resource
+    // using the same ScreenshotCid naming — see EmailSender.Send.
+    private static string BuildScreenshotBlock(string sourceName, IReadOnlyList<string> screenshots)
+    {
+        var imgs = string.Join("\n", screenshots.Select((_, i) =>
+            $"""<img src="cid:{ScreenshotCid(sourceName, i)}" alt="{sourceName} — γράφημα/πίνακας {i + 1}" style="max-width:100%;border-radius:8px;border:1px solid #21262d;margin-top:10px;">"""));
+        return $"""
+            <div class="screenshot-block">
+            {imgs}
+            </div>
+            """;
+    }
+
+    // Deterministic Content-ID for a source's Nth screenshot — shared between ComposeHtml
+    // (which references it as "cid:...") and EmailSender (which attaches the actual PNG
+    // bytes as a linked resource under this same ID) so the two stay in sync.
+    public static string ScreenshotCid(string sourceName, int index) =>
+        $"shot_{Regex.Replace(sourceName, "[^a-zA-Z0-9]", "_")}_{index}";
 
     private static string StatusBadge(SourceStatus s)
     {

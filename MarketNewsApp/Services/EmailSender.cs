@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Mail;
 using MailKit.Net.Smtp;
 using MailKit.Security;
+using MarketNewsApp.Models;
 using MimeKit;
 using Scriban;
 
@@ -9,7 +10,7 @@ namespace MarketNewsApp.Services;
 
 public class EmailSender
 {
-    public void Send(string reportDate, string? marketsReviewPath = null, string? supportiveMaterialPath = null)
+    public void Send(string aiSummary, Dictionary<string, SourceSummary> perSource)
     {
         static string? EnvOrNull(string name)
         {
@@ -36,6 +37,10 @@ public class EmailSender
             throw new InvalidOperationException("GMAIL_USER / GMAIL_APP_PASSWORD not set (or configure SMTP_HOST for a different provider)");
 
         var recipients = emailTo.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var reportDate = DateTime.Now.ToString("dddd, dd MMMM yyyy");
+        var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
+
+        var htmlBody = RenderHtml(aiSummary, reportDate, sinceDate);
 
         // Build MIME message
         var message = new MimeMessage();
@@ -44,20 +49,25 @@ public class EmailSender
             message.To.Add(MailboxAddress.Parse(addr));
         message.Subject = $"Market News AI — {DateTime.Now:dd/MM/yyyy}";
 
-        // Short plain-text body — the actual report content lives in the two attached
-        // PowerPoint decks (same charts/text/branding as before), not dumped in the email.
-        var builder = new BodyBuilder
-        {
-            TextBody = $"Εβδομαδιαία Ενημέρωση Αγορών — {reportDate}\n\n" +
-                "Δείτε τα συνημμένα PowerPoint αρχεία:\n" +
-                "  • Markets Review — συνθετική επισκόπηση, κατάσταση πηγών, γραφήματα\n" +
-                "  • Supportive Material — αναλυτικά highlights ανά πηγή",
-        };
+        var builder = new BodyBuilder();
+        builder.TextBody = $"Εβδομαδιαία Ενημέρωση Αγορών — {reportDate}\n\n" +
+            "Ανοίξτε σε email client που υποστηρίζει HTML για να δείτε γραφήματα/πίνακες (screenshots από τις πηγές).\n\n" +
+            "Πηγές: Bloomberg, BlackRock, T. Rowe Price, John Hancock, BNP Paribas AM, Edward Jones, JPMorgan AM, Citi";
+        builder.HtmlBody = htmlBody;
 
-        foreach (var path in new[] { marketsReviewPath, supportiveMaterialPath })
+        // Attach each source's page screenshots (charts/tables captured verbatim from the
+        // live site, not AI-rendered) as inline CID images — cid naming matches what
+        // AiSummarizer.ComposeHtml embedded via AiSummarizer.ScreenshotCid.
+        foreach (var (sourceName, summary) in perSource)
         {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
-            builder.Attachments.Add(path, new ContentType("application", "vnd.openxmlformats-officedocument.presentationml.presentation"));
+            for (var i = 0; i < summary.Screenshots.Count; i++)
+            {
+                var cid = AiSummarizer.ScreenshotCid(sourceName, i);
+                var imgBytes = Convert.FromBase64String(summary.Screenshots[i]);
+                var image = builder.LinkedResources.Add($"{cid}.png", imgBytes, new ContentType("image", "png"));
+                image.ContentId = cid;
+                image.ContentDisposition = new ContentDisposition(ContentDisposition.Inline);
+            }
         }
 
         message.Body = builder.ToMessageBody();
