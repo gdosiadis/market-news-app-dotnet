@@ -195,7 +195,7 @@ public class AiSummarizer : IAsyncDisposable
                 var html = await ChatAsync(
                     [new("system", systemPrompt), new("user", userPrompt)],
                     maxTokens: 3500, temperature: 0.3);
-                html = StripCodeFences(html);
+                html = StripLeadingPreamble(StripCodeFences(html));
 
                 if (IsNoContent(html))
                 {
@@ -262,6 +262,17 @@ public class AiSummarizer : IAsyncDisposable
         text = text.TrimEnd();
         if (text.EndsWith("```")) text = text[..^3];
         return text.Trim();
+    }
+
+    // The model occasionally breaks character and prepends a conversational meta-comment
+    // (e.g. "Confirmed — this is exactly the AI synthesis prompt... I'll produce the content
+    // it's asking for directly.") before the actual HTML, even though the prompt explicitly
+    // says to start with a specific tag. Since every prompt requires the response to start
+    // with "<div ...>", drop any leading text before the first "<" character.
+    private static string StripLeadingPreamble(string text)
+    {
+        var tagStart = text.IndexOf('<');
+        return tagStart > 0 ? text[tagStart..].TrimStart() : text;
     }
 
     private static bool IsNoContent(string html)
@@ -360,7 +371,7 @@ public class AiSummarizer : IAsyncDisposable
         try
         {
             var result = await ChatAsync([new("user", prompt)], maxTokens: 2000, temperature: 0.4);
-            return StripCodeFences(result);
+            return StripLeadingPreamble(StripCodeFences(result));
         }
         catch (Exception ex)
         {
