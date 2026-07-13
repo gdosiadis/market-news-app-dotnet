@@ -588,12 +588,21 @@ public class AiSummarizer : IAsyncDisposable
     // concurrent session.create calls occasionally fail the CLI's internal GitHub
     // auth check even though the credentials are valid. A short retry clears it up
     // almost always, since it's a proxy/connection hiccup, not a real auth problem.
+    // "this organization has been disabled" has also been observed to be one of these
+    // flaky hiccups (confirmed by the same source succeeding again on a later run
+    // within minutes with no account/config changes in between) rather than a genuine,
+    // persistent account/org suspension — so it's retried too instead of failing fast.
     private static readonly string[] TransientCopilotErrors =
-        ["fetch oauth user login", "network fetch failed", "communication error with copilot cli"];
+    [
+        "fetch oauth user login",
+        "network fetch failed",
+        "communication error with copilot cli",
+        "this organization has been disabled",
+    ];
 
     private async Task<string> ChatViaCopilotAsync(List<ChatMessage> messages)
     {
-        const int maxAttempts = 3;
+        const int maxAttempts = 4;
         for (var attempt = 1; ; attempt++)
         {
             try
@@ -602,7 +611,7 @@ public class AiSummarizer : IAsyncDisposable
             }
             catch (Exception ex) when (attempt < maxAttempts && TransientCopilotErrors.Any(e => ex.Message.ToLowerInvariant().Contains(e)))
             {
-                var delay = TimeSpan.FromMilliseconds(750 * attempt);
+                var delay = TimeSpan.FromMilliseconds(1500 * attempt);
                 Console.WriteLine($"     ⏳  Transient Copilot error (attempt {attempt}/{maxAttempts}), retrying in {delay.TotalSeconds:F1}s...");
                 await Task.Delay(delay);
             }
