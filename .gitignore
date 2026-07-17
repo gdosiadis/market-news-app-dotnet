@@ -16,3 +16,6 @@ scrape_debug.txt
 MarketNewsApp/logs/
 MarketNewsApp/report_run.log
 MarketNewsApp/run_output*.txt
+
+# Local SQLite databases (application configuration and Mailpit data)
+MarketNewsApp/*.db

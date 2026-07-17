@@ -3,6 +3,7 @@ using System.Net.Mail;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using MarketNewsApp.Models;
+using MarketNewsApp.Data;
 using MimeKit;
 using Scriban;
 
@@ -10,6 +11,13 @@ namespace MarketNewsApp.Services;
 
 public class EmailSender
 {
+    private readonly EmailConfiguration _configuration;
+
+    public EmailSender(EmailConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+
     public void Send(string aiSummary, Dictionary<string, SourceSummary> perSource)
     {
         static string? EnvOrNull(string name)
@@ -20,8 +28,6 @@ public class EmailSender
 
         var gmailUser = EnvOrNull("GMAIL_USER");
         var gmailPass = EnvOrNull("GMAIL_APP_PASSWORD");
-        var emailTo = Environment.GetEnvironmentVariable("EMAIL_TO")
-            ?? throw new InvalidOperationException("EMAIL_TO not set");
 
         // ── SMTP settings (optional overrides) ──────────────────────────────
         // Defaults to Gmail; set SMTP_HOST (e.g. localhost for Mailpit) to override.
@@ -36,7 +42,7 @@ public class EmailSender
         if (isGmail && (gmailUser is null || gmailPass is null))
             throw new InvalidOperationException("GMAIL_USER / GMAIL_APP_PASSWORD not set (or configure SMTP_HOST for a different provider)");
 
-        var recipients = emailTo.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var recipients = _configuration.Recipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var reportDate = DateTime.Now.ToString("dddd, dd MMMM yyyy");
         var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
 
@@ -44,10 +50,10 @@ public class EmailSender
 
         // Build MIME message
         var message = new MimeMessage();
-        message.From.Add(new MailboxAddress("Market News AI", fromAddress));
+        message.From.Add(new MailboxAddress(_configuration.FromDisplayName, fromAddress));
         foreach (var addr in recipients)
             message.To.Add(MailboxAddress.Parse(addr));
-        message.Subject = $"Market News AI — {DateTime.Now:dd/MM/yyyy}";
+        message.Subject = _configuration.SubjectTemplate.Replace("{{date}}", DateTime.Now.ToString("dd/MM/yyyy"), StringComparison.Ordinal);
 
         var builder = new BodyBuilder();
         builder.TextBody = $"Εβδομαδιαία Ενημέρωση Αγορών — {reportDate}\n\n" +

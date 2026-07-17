@@ -1,12 +1,22 @@
 using System.CommandLine;
 using DotNetEnv;
+using MarketNewsApp.Data;
 using MarketNewsApp.Models;
 using MarketNewsApp.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Scriban;
 
 // Load .env file — search project directory first, then CWD
 var envFile = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".env");
 Env.Load(File.Exists(envFile) ? envFile : ".env");
+
+var connectionString = Environment.GetEnvironmentVariable("SQLITE_CONNECTION_STRING")
+    ?? "Data Source=market-news.db";
+var dbOptions = new DbContextOptionsBuilder<MarketNewsDbContext>().UseSqlite(connectionString).Options;
+var configurationService = new ConfigurationService(new PooledDbContextFactory<MarketNewsDbContext>(dbOptions));
+await using (var db = new MarketNewsDbContext(dbOptions))
+    await db.Database.MigrateAsync();
 
 var rootCommand = new RootCommand("Market News AI — Daily Email Report");
 
@@ -28,29 +38,30 @@ rootCommand.SetHandler(async (bool now, bool test, string? debugDomUrl) =>
 
     if (test)
     {
-        RunPipeline(dryRun: true);
+        RunPipeline(configurationService.GetAsync().GetAwaiter().GetResult(), dryRun: true);
         return;
     }
 
     if (now)
     {
-        RunPipeline(dryRun: false);
+        RunPipeline(configurationService.GetAsync().GetAwaiter().GetResult(), dryRun: false);
         return;
     }
 
     // Scheduled mode
-    var sendTime = Environment.GetEnvironmentVariable("SEND_TIME") ?? "07:00";
-    Console.WriteLine($"\n📅  Scheduler started — report will be sent daily at {sendTime}");
+    Console.WriteLine("\n📅  Scheduler started — SQLite controls the daily send time");
     Console.WriteLine("    Press Ctrl+C to stop.\n");
 
     // Simple scheduler loop
     while (true)
     {
+        var configuration = configurationService.GetAsync().GetAwaiter().GetResult();
+        var sendTime = configuration.Schedule.DailySendTime;
         var now2 = DateTime.Now;
         var targetTime = TimeSpan.Parse(sendTime);
-        if (now2.TimeOfDay.Hours == targetTime.Hours && now2.TimeOfDay.Minutes == targetTime.Minutes)
+        if (configuration.Schedule.IsEnabled && now2.TimeOfDay.Hours == targetTime.Hours && now2.TimeOfDay.Minutes == targetTime.Minutes)
         {
-            RunPipeline();
+            RunPipeline(configuration);
             Thread.Sleep(61000); // avoid re-trigger within the same minute
         }
         Thread.Sleep(30000);
@@ -105,7 +116,7 @@ static void Banner(string msg, char ch = '─')
     Console.WriteLine($"\n{line}\n  {msg}\n{line}");
 }
 
-static void RunPipeline(bool dryRun = false)
+static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
 {
     var start = DateTime.Now;
     Banner($"🚀  Market News AI  —  {start:dd/MM/yyyy HH:mm}", '═');
@@ -113,14 +124,14 @@ static void RunPipeline(bool dryRun = false)
     // ── Step 1/5: Parallel Extraction ────────────────────────────────────────
     Banner("Step 1/5 · Parallel Extraction");
     Dictionary<string, ScrapedSite> scraped;
-    if (ScrapeCache.TryLoad(out var cached))
+    if (configuration.Features.GetValueOrDefault("scrape-cache") && ScrapeCache.TryLoad(out var cached))
     {
         scraped = cached;
         Console.WriteLine($"\n  💾  Cache hit — {scraped.Count} sites loaded (skipping scrape)");
     }
     else
     {
-        var scraper = new Scraper();
+        var scraper = new Scraper(configuration.Sources);
         scraped = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
         Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {scraped.Values.Sum(v => v.Text.Length):N0} chars · {scraped.Values.Sum(v => v.Screenshots.Count)} screenshots");
     }
@@ -132,15 +143,15 @@ static void RunPipeline(bool dryRun = false)
 
     // ── Step 3/5: Cache ──────────────────────────────────────────────────────
     Banner("Step 3/5 · Cache — persisting cleaned data");
-    ScrapeCache.Save(cleaned);
+    if (configuration.Features.GetValueOrDefault("scrape-cache")) ScrapeCache.Save(cleaned);
 
     // ── Step 4/5: Per-source AI summaries ────────────────────────────────────
     Banner("Step 4/5 · Per-source AI summaries (parallel)");
-    var summaryCache = SummaryCache.Load();
+    var summaryCache = configuration.Features.GetValueOrDefault("summary-cache") ? SummaryCache.Load() : null;
     if (summaryCache != null)
         Console.WriteLine($"  💾  Same-day summary cache found — reusing unchanged sources, thinking only about new content");
 
-    var summarizer = AiSummarizer.CreateAsync().GetAwaiter().GetResult();
+    var summarizer = AiSummarizer.CreateAsync(configuration).GetAwaiter().GetResult();
     try
     {
         Dictionary<string, SourceSummary> perSource;
@@ -180,18 +191,18 @@ static void RunPipeline(bool dryRun = false)
             Console.WriteLine("  ✅  Synthesis ready");
         }
 
-        SummaryCache.Save(new SummaryCache.CachedRun(newPerSourceCache, compositeHash, synthesis));
+        if (configuration.Features.GetValueOrDefault("summary-cache")) SummaryCache.Save(new SummaryCache.CachedRun(newPerSourceCache, compositeHash, synthesis));
 
         var srcList = string.Join("\n", cleaned.Select(kv =>
             $"<li>📄 <strong>{kv.Key}</strong> — <a href=\"{kv.Value.Url}\">{kv.Value.Url}</a></li>"));
-        var aiHtml = AiSummarizer.ComposeHtml(perSource, synthesis, srcList);
+        var aiHtml = summarizer.ComposeHtml(perSource, synthesis, srcList);
 
         var reportDateStr = DateTime.Now.ToString("dd/MM/yyyy");
-        var sinceDateStr  = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
+        var sinceDateStr  = DateTime.Now.AddDays(-configuration.Report.LookbackDays).ToString("dd/MM/yyyy");
 
         if (dryRun)
         {
-            var emailSender = new EmailSender();
+            var emailSender = new EmailSender(configuration.Email);
             var html        = emailSender.RenderHtml(aiHtml, reportDateStr, sinceDateStr);
 
             // Local file preview can't resolve cid: references (that's an email-client
@@ -214,7 +225,7 @@ static void RunPipeline(bool dryRun = false)
         {
             try
             {
-                var emailSender = new EmailSender();
+                var emailSender = new EmailSender(configuration.Email);
                 emailSender.Send(aiHtml, perSource);
             }
             catch (Exception ex)

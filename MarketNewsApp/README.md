@@ -35,20 +35,16 @@ pwsh bin/Debug/net8.0/playwright.ps1 install chromium
 # 4. Ρύθμιση credentials
 cp .env.example .env
 # Επεξεργαστείτε το .env με:
-#   - AI_PROVIDER (προαιρετικό) → επιλέγει τον AI provider:
-#       copilot (default) → GitHub Copilot SDK (χρειάζεται `copilot` CLI login, χωρίς API key)
-#       groq              → GROQ_API_KEY  → https://console.groq.com
-#       azure             → Azure OpenAI / Foundry:
-#           AZURE_OPENAI_ENDPOINT
-#           AZURE_OPENAI_API_KEY
-#           AZURE_OPENAI_DEPLOYMENT
-#           (προαιρετικά) AZURE_OPENAI_API_VERSION
-#   - COPILOT_MODEL (προαιρετικό) → μοντέλο για τον Copilot provider
+#   - SQLITE_CONNECTION_STRING → SQLite file για production configuration
+#   - GROQ_API_KEY ή Azure OpenAI credentials → μόνο secrets του AI provider
 #   - GMAIL_USER    → το Gmail σας
 #   - GMAIL_APP_PASSWORD → Google Account > Security > App Passwords
-#   - EMAIL_TO      → παραλήπτες (κόμμα για πολλούς)
-#   - SEND_TIME     → π.χ. 07:00
 ```
+
+Στην πρώτη εκκίνηση η εφαρμογή εφαρμόζει αυτόματα τις EF Core migrations και
+φορτώνει τα default settings. Για controlled deployment, εφαρμόστε τα και
+ξεχωριστά με `dotnet ef database update`. API keys, SMTP passwords και
+connection strings παραμένουν σε environment variables ή Kubernetes Secrets.
 
 ## Χρήση
 
@@ -117,9 +113,20 @@ MarketNewsApp/
 
 | Provider | `AI_PROVIDER` | Απαιτούμενα env vars | Σημειώσεις |
 |---|---|---|---|
-| GitHub Copilot SDK (**default**) | *(κενό)* ή `copilot` | *(κανένα API key — χρειάζεται `copilot` CLI login)*, προαιρετικά `COPILOT_MODEL` | Χρησιμοποιεί το ήδη συνδεδεμένο Copilot session· λειτουργεί ακόμη και όταν το `api.groq.com`/OpenAI endpoints είναι μπλοκαρισμένα από εταιρικό firewall |
-| Groq | `groq` | `GROQ_API_KEY` | Απευθείας HTTPS στο `api.groq.com` |
-| Azure OpenAI / Foundry | `azure` (ή κενό με πλήρως συμπληρωμένα Azure vars) | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, προαιρετικά `AZURE_OPENAI_API_VERSION` | — |
+| GitHub Copilot SDK (**default**) | `AgentSettings.Provider = copilot` | *(κανένα API key — χρειάζεται `copilot` CLI login)* | Χρησιμοποιεί το ήδη συνδεδεμένο Copilot session· λειτουργεί ακόμη και όταν το `api.groq.com`/OpenAI endpoints είναι μπλοκαρισμένα από εταιρικό firewall |
+| Groq | `AgentSettings.Provider = groq` | `GROQ_API_KEY` | Απευθείας HTTPS στο `api.groq.com` |
+| Azure OpenAI / Foundry | `AgentSettings.Provider = azure` | `AZURE_OPENAI_API_KEY` | Endpoint, deployment και API version βρίσκονται στο `AgentSettings` της SQLite |
+
+## Production Configuration (SQLite)
+
+Οι παραγωγικά μεταβλητές ρυθμίσεις βρίσκονται στο τοπικό SQLite αρχείο
+`market-news.db` και φορτώνονται
+με cache 5 λεπτών: `ScrapeSources` (URLs και selectors), `Prompts`,
+`EmailSettings` (recipients/subject), `SchedulingSettings`, `AgentSettings`,
+`ReportSettings` και `FeatureFlags`. Η εφαρμογή περιλαμβάνει seed data που
+αντιστοιχεί στα προηγούμενα defaults του κώδικα. Ενημερώστε τις τιμές μέσω της
+διαχειριστικού εργαλείου SQLite, όχι με αλλαγή source. Το αρχείο πρέπει να
+βρίσκεται σε persistent volume όταν η εφαρμογή τρέχει σε container.
 
 ## Tech Stack
 

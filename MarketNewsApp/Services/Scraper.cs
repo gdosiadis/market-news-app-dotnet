@@ -13,80 +13,12 @@ public class Scraper
         "AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/124.0.0.0 Safari/537.36";
 
-    private static readonly SiteConfig[] Sites =
-    [
-        new()
-        {
-            Name = "Bloomberg Markets",
-            Url = "https://www.bloomberg.com/markets",
-            Selectors = ["article", "[data-component='headline']", "h1", "h2", "h3", ".story-package-module__headline"],
-            WaitFor = "body",
-            Timeout = 20000,
-        },
-        new()
-        {
-            Name = "BlackRock Investment Institute",
-            Url = "https://www.blackrock.com/corporate/insights/blackrock-investment-institute/publications/weekly-commentary",
-            Selectors = ["article", ".content-block", "h1", "h2", "p", ".editorial-content"],
-            WaitFor = "body",
-            Timeout = 25000,
-        },
-        new()
-        {
-            Name = "T. Rowe Price Global Markets",
-            Url = "https://www.troweprice.com/personal-investing/resources/insights/global-markets-weekly-update.html",
-            Selectors = ["article", "main", ".article-body", "h1", "h2", "h3", "p"],
-            WaitFor = "main",
-            Timeout = 25000,
-        },
-        new()
-        {
-            Name = "BNP Paribas AM Viewpoint",
-            Url = "https://viewpoint.bnpparibas-am.com/",
-            Selectors = ["article", "main", "p", ".article-title", "h1", "h2", "h3", ".card-title"],
-            WaitFor = "body",
-            Timeout = 20000,
-        },
-        new()
-        {
-            Name = "Edward Jones Weekly Update",
-            Url = "https://www.edwardjones.com/us-en/market-news-insights/stock-market-news/stock-market-weekly-update",
-            Selectors = ["article", "main", ".article-body", "h1", "h2", "h3", "p"],
-            WaitFor = "main",
-            Timeout = 25000,
-        },
-        new()
-        {
-            Name = "JPMorgan Weekly Market Recap",
-            Url = "https://am.jpmorgan.com/us/en/asset-management/institutional/insights/market-insights/market-updates/weekly-market-recap/",
-            Selectors = ["article", "main", ".content", "h1", "h2", "h3", "p"],
-            WaitFor = "body",
-            Timeout = 25000,
-            // The real recap text is collapsed behind a "Read more" toggle by default;
-            // expand it before extraction so we don't just scrape the legal disclaimer
-            // gate and a truncated teaser.
-            ExpandButtonTexts = ["Read more"],
-            // JPMorgan keeps a static, server-rendered copy of the institutional-investor
-            // disclaimer (".jp-seo-modal-container") in the DOM purely for SEO/crawlers —
-            // it sits on top of (and intercepts clicks for) the real interactive gate, and
-            // its duplicate legal text otherwise leaks into every selector match even
-            // after the real gate is accepted.
-            ExcludeSelectors = [".jp-seo-modal-container", ".jpm-am-overlay-disclaimer"],
-        },
-        new()
-        {
-            Name = "Citi Market Insights",
-            Url = "https://marketinsights.citi.com/Market-Commentary/Weekly-Market-Update/index.html",
-            // The index page above is only a list of article teasers ("chips") with no
-            // chart/table content at all — the real weekly analysis (with "This Week in
-            // Charts" figures and market-data tables) lives on a separate, dynamically
-            // named article page linked from the first chip. Follow it before extracting.
-            FollowFirstLinkSelector = "#articles-list .chip h2 a",
-            Selectors = ["article", "main", ".content-area", "h1", "h2", "h3", "p"],
-            WaitFor = "body",
-            Timeout = 25000,
-        },
-    ];
+    private readonly IReadOnlyList<SiteConfig> _sites;
+
+    public Scraper(IReadOnlyList<SiteConfig> sites)
+    {
+        _sites = sites;
+    }
 
     // Test-only entry point used by `--debug-dom` to exercise the real screenshot capture
     // pipeline (lazy-load triggering, media filtering, blank detection, retargeting) against
@@ -109,7 +41,7 @@ public class Scraper
             Args = ["--disable-blink-features=AutomationControlled"],
         });
 
-        var tasks = Sites.Select(async site =>
+        var tasks = _sites.Select(async site =>
         {
             await semaphore.WaitAsync();
             try

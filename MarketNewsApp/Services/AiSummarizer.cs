@@ -15,16 +15,18 @@ public class AiSummarizer : IAsyncDisposable
     // (env vars by default) so a future DB-backed provider can be swapped in
     // without changing this class or the agents themselves.
     private readonly IChatAgent _agent;
+    private readonly RuntimeConfiguration _configuration;
 
-    private AiSummarizer(IChatAgent agent)
+    private AiSummarizer(IChatAgent agent, RuntimeConfiguration configuration)
     {
         _agent = agent;
+        _configuration = configuration;
     }
 
-    public static async Task<AiSummarizer> CreateAsync(IAgentSettingsProvider? settingsProvider = null)
+    public static async Task<AiSummarizer> CreateAsync(RuntimeConfiguration configuration, IAgentSettingsProvider? settingsProvider = null)
     {
-        var agent = await ChatAgentFactory.CreateAsync(settingsProvider);
-        return new AiSummarizer(agent);
+        var agent = await ChatAgentFactory.CreateAsync(settingsProvider ?? new SqlAgentSettingsProvider(configuration));
+        return new AiSummarizer(agent, configuration);
     }
 
     // ── Step 2: Clean ─────────────────────────────────────────────────────────
@@ -57,24 +59,8 @@ public class AiSummarizer : IAsyncDisposable
     {
         Console.WriteLine($"  🤖  Using {ProviderName}...");
         var today = DateTime.Now.ToString("dd/MM/yyyy");
-        var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
-
-        var systemPrompt = """
-            Είσαι επιμελητής που αποδίδει στα ελληνικά ΜΟΝΟ τις πληροφορίες του παρεχόμενου scraped κειμένου.
-            Η ακρίβεια και η πιστότητα στην πηγή είναι σημαντικότερες από την έκταση ή την ερμηνεία.
-            Χρησιμοποιείς HTML formatting:
-            - <h3> για υποενότητες
-            - <ul>/<li> για bullet points (κάθε <li> πλήρης πρόταση/ανάλυση, όχι λέξη-κλειδί)
-            - <strong> για έμφαση σε αριθμούς & συμπεράσματα
-            - <table class="market-table"> με <th>/<td> για αριθμητικά δεδομένα & αποδόσεις
-            - Emoji για οπτική σήμανση (📈📉⚠️✅🏦🌍💰🤖🛢️🎯)
-            ΚΑΝΟΝΕΣ:
-            1. Χρησιμοποιείς ΑΠΟΚΛΕΙΣΤΙΚΑ το περιεχόμενο της συγκεκριμένης πηγής. Ποτέ δεν προσθέτεις γεγονότα, αιτίες, προβλέψεις, τιμές, ημερομηνίες, συστάσεις ή γενική γνώση που δεν εμφανίζονται ρητά στο scraped κείμενο.
-            2. Κάθε πρόταση πρέπει να μπορεί να εντοπιστεί ή να συναχθεί άμεσα από μία ή περισσότερες προτάσεις του scraped κειμένου. Αν δεν υπάρχει ρητή βάση, την παραλείπεις.
-            3. Δεν ερμηνεύεις «τι σημαίνει για τον επενδυτή», δεν εξηγείς αιτίες και δεν κάνεις επενδυτική σύσταση, εκτός αν η ίδια η πηγή το δηλώνει ρητά.
-            4. Διατηρείς ακριβώς όλους τους αριθμούς, ποσοστά, ημερομηνίες, ονόματα και επιφυλάξεις που αναφέρει η πηγή. Δεν συμπληρώνεις κενά.
-            5. Αν η πηγή δεν περιέχει αρκετά στοιχεία για μία ενότητα, την παραλείπεις. Μην επιμηκύνεις το κείμενο με γενικές διατυπώσεις.
-            """;
+        var sinceDate = DateTime.Now.AddDays(-_configuration.Report.LookbackDays).ToString("dd/MM/yyyy");
+        var systemPrompt = Prompt("source-system");
 
         var siteList = sites.ToList();
         var sections = new string[siteList.Count];
@@ -134,36 +120,8 @@ public class AiSummarizer : IAsyncDisposable
             // Some sources (e.g. JPMorgan) bury the real analysis well past the first
             // few thousand characters behind nav/chart-accessibility text; a small
             // truncation cut it off entirely before the model ever saw it.
-            var textContent = info.Text.Length > 20000 ? info.Text[..20000] : info.Text;
-            var userPrompt = $"""
-                Σήμερα είναι {today}. Παρακάτω δίνεται το περιεχόμενο ΑΠΟΚΛΕΙΣΤΙΚΑ από την πηγή «{name}» ({info.Url}) για την περίοδο {sinceDate} – {today}.
-
-                Απόδωσε στα ελληνικά μόνο τα γεγονότα, αριθμούς και ρητές θέσεις που εμφανίζονται στο παρακάτω scraped κείμενο.
-
-                Ξεκίνα ΑΚΡΙΒΩΣ ως εξής:
-                <div class="section">
-                <h2>📄 {name}</h2>
-                <p class="source-tag">Πηγή: <a href="{info.Url}">{name}</a></p>
-
-                Στη συνέχεια παρουσίασε, μόνο όταν περιέχονται ρητά στην πηγή:
-                - 📰 Τα γεγονότα / ειδήσεις / θέματα που θίγει
-                - 📊 Τα συγκεκριμένα αριθμητικά δεδομένα σε <table class="market-table"> όπου αυτό βοηθά την πιστή παρουσίαση
-                - 🎯 Τη στρατηγική θέση της πηγής (μόνο εάν δηλώνεται ρητά)
-                Κλείσε την ενότητα με </div>.
-
-                ΣΗΜΑΝΤΙΚΟ:
-                - Κάνε ΣΑΦΕΣ ότι ΟΛΕΣ οι πληροφορίες προέρχονται από «{name}» (χρησιμοποίησε φράσεις όπως «Σύμφωνα με την {name}…»).
-                - ΜΗΝ προσθέτεις πληροφορίες από άλλες πηγές ή από δική σου γνώση. Αν κάτι δεν αναφέρεται στο κείμενο, μην το αναφέρεις.
-                - ΜΗΝ παρουσιάζεις συμπεράσματα, αιτίες, προβλέψεις ή επενδυτικές επιπτώσεις ως δικές σου ερμηνείες.
-
-                ⚠️ ΚΡΙΣΙΜΟ: Αν το ΠΕΡΙΕΧΟΜΕΝΟ ΠΗΓΗΣ παρακάτω ΔΕΝ περιέχει ουσιαστικό χρηματοοικονομικό/αναλυτικό υλικό — π.χ. είναι μόνο νομική αποποίηση ευθύνης (disclaimer), όροι χρήσης, cookie/privacy notice, επιλογή κατηγορίας επενδυτή, ή απαιτεί σύνδεση/αποδοχή όρων — ΜΗΝ γράψεις ανάλυση και ΜΗΝ εξηγήσεις γιατί. Επίστρεψε ΑΚΡΙΒΩΣ και ΜΟΝΟ την εξής μία γραμμή, χωρίς τίποτα άλλο:
-                NO_CONTENT
-
-                ΠΕΡΙΕΧΟΜΕΝΟ ΠΗΓΗΣ «{name}»:
-                {textContent}
-
-                Γράψε ΜΟΝΟ το HTML content (χωρίς <html>/<head>/<body> tags), με πιστή απόδοση του διαθέσιμου περιεχομένου — ή σκέτο NO_CONTENT αν δεν υπάρχει ουσιαστικό περιεχόμενο.
-                """;
+            var textContent = info.Text.Length > _configuration.Report.MaxSummarySourceCharacters ? info.Text[.._configuration.Report.MaxSummarySourceCharacters] : info.Text;
+            var userPrompt = FormatPrompt("source-user", ("today", today), ("sinceDate", sinceDate), ("sourceName", name), ("sourceUrl", info.Url), ("content", textContent));
 
             await aiSemaphore.WaitAsync();
             try
@@ -228,16 +186,8 @@ public class AiSummarizer : IAsyncDisposable
 
         try
         {
-            var content = scrapedContent.Length > 30000 ? scrapedContent[..30000] : scrapedContent;
-            var translation = await ChatAsync(
-                [new("user", $"""
-                    Μετέφρασε πιστά στα ελληνικά το παρακάτω scraped περιεχόμενο από την πηγή «{sourceName}».
-                    Μην το συνοψίσεις, μην προσθέσεις πληροφορίες και μην χρησιμοποιήσεις HTML ή Markdown.
-                    Διατήρησε τις αλλαγές γραμμής, τους αριθμούς, τα ονόματα εταιρειών και τους χρηματοοικονομικούς όρους.
-
-                    ΠΕΡΙΕΧΟΜΕΝΟ:
-                    {content}
-                    """)], maxTokens: 7500, temperature: 0.1);
+            var content = scrapedContent.Length > _configuration.Report.MaxTranslationSourceCharacters ? scrapedContent[.._configuration.Report.MaxTranslationSourceCharacters] : scrapedContent;
+            var translation = await ChatAsync([new("user", FormatPrompt("translation", ("sourceName", sourceName), ("content", content)))], maxTokens: 7500, temperature: 0.1);
             return StripCodeFences(translation).Trim();
         }
         catch (Exception ex)
@@ -349,7 +299,7 @@ public class AiSummarizer : IAsyncDisposable
     public async Task<string> SynthesizeAsync(Dictionary<string, SourceSummary> perSource)
     {
         var today = DateTime.Now.ToString("dd/MM/yyyy");
-        var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
+        var sinceDate = DateTime.Now.AddDays(-_configuration.Report.LookbackDays).ToString("dd/MM/yyyy");
 
         var snippets = string.Join("\n\n", perSource
             .Where(kv => kv.Value.Status is SourceStatus.Success or SourceStatus.Partial)
@@ -360,23 +310,7 @@ public class AiSummarizer : IAsyncDisposable
                 return $"### {kv.Key}\n{(text.Length > 1200 ? text[..1200] : text)}";
             }));
 
-        var prompt = $"""
-            Με βάση τις αναλύσεις ανά πηγή για {sinceDate} – {today}, σύνταξε ΣΥΝΘΕΤΙΚΗ ΕΠΙΣΚΟΠΗΣΗ σε HTML στα ΕΛΛΗΝΙΚΑ:
-
-            1. Κοινά θέματα και τάσεις που επαναλαμβάνονται σε πολλές πηγές
-            2. Αποκλίσεις/αντιφάσεις μεταξύ πηγών
-            3. Συνολική αξιολόγηση κατάστασης αγορών
-            4. Επενδυτικές συστάσεις από τη σύνθεση
-
-            Ξεκίνα ΑΚΡΙΒΩΣ:
-            <div class="section synthesis">
-            <h2>🔍 Συνθετική Επισκόπηση Αγορών — {today}</h2>
-
-            Κλείσε με </div>. Τουλάχιστον 4-5 παράγραφοι. Μόνο HTML (χωρίς html/head/body).
-
-            ΑΝΑΛΥΣΕΙΣ ΑΝΑ ΠΗΓΗ:
-            {snippets}
-            """;
+        var prompt = FormatPrompt("synthesis", ("today", today), ("sinceDate", sinceDate), ("snippets", snippets));
 
         try
         {
@@ -396,13 +330,13 @@ public class AiSummarizer : IAsyncDisposable
     }
 
     // ── Step 6: Compose HTML ──────────────────────────────────────────────────
-    public static string ComposeHtml(
+    public string ComposeHtml(
         Dictionary<string, SourceSummary> perSource,
         string synthesis,
         string srcList)
     {
         var today = DateTime.Now.ToString("dd/MM/yyyy");
-        var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
+        var sinceDate = DateTime.Now.AddDays(-_configuration.Report.LookbackDays).ToString("dd/MM/yyyy");
 
         var statusRows = string.Join("\n", perSource.Select(kv =>
             $"<tr><td>{kv.Key}</td><td>{StatusBadge(kv.Value.Status)}</td></tr>"));
@@ -432,11 +366,11 @@ public class AiSummarizer : IAsyncDisposable
         foreach (var (name, summary) in perSource)
         {
             if (string.IsNullOrEmpty(summary.Html)) continue;
-            parts.Add(AddInlineTranslatedContent(summary.Html, summary.TranslatedContent, summary.ScrapeDiagnostics));
+            parts.Add(_configuration.Report.IncludeTranslatedContent ? AddInlineTranslatedContent(summary.Html, summary.TranslatedContent, summary.ScrapeDiagnostics) : summary.Html);
             if (summary.Screenshots.Count > 0)
                 parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
         }
-        parts.Add(footer);
+        if (_configuration.Report.IncludeSourceList) parts.Add(footer);
         return string.Join("\n", parts);
     }
 
@@ -532,6 +466,18 @@ public class AiSummarizer : IAsyncDisposable
             return $"### {kv.Key}\nURL: {kv.Value.Url}\n{text}";
         });
         return string.Join("\n\n", sections);
+    }
+
+    private string Prompt(string key) => _configuration.Prompts.TryGetValue(key, out var value)
+        ? value
+        : throw new InvalidOperationException($"Required prompt '{key}' is missing or disabled in SQLite.");
+
+    private string FormatPrompt(string key, params (string Name, string Value)[] tokens)
+    {
+        var template = Prompt(key);
+        foreach (var (name, value) in tokens)
+            template = template.Replace($"{{{{{name}}}}}", value, StringComparison.Ordinal);
+        return template;
     }
 
     private Task<string> ChatAsync(List<ChatMessage> messages, int maxTokens = 4096, double temperature = 0.3) =>
