@@ -35,13 +35,15 @@ pwsh bin/Debug/net8.0/playwright.ps1 install chromium
 # 4. Ρύθμιση credentials
 cp .env.example .env
 # Επεξεργαστείτε το .env με:
-#   - Επιλογή A (Groq):
-#       GROQ_API_KEY  → https://console.groq.com
-#   - Επιλογή B (Azure OpenAI / Foundry):
-#       AZURE_OPENAI_ENDPOINT
-#       AZURE_OPENAI_API_KEY
-#       AZURE_OPENAI_DEPLOYMENT
-#       (προαιρετικά) AZURE_OPENAI_API_VERSION
+#   - AI_PROVIDER (προαιρετικό) → επιλέγει τον AI provider:
+#       copilot (default) → GitHub Copilot SDK (χρειάζεται `copilot` CLI login, χωρίς API key)
+#       groq              → GROQ_API_KEY  → https://console.groq.com
+#       azure             → Azure OpenAI / Foundry:
+#           AZURE_OPENAI_ENDPOINT
+#           AZURE_OPENAI_API_KEY
+#           AZURE_OPENAI_DEPLOYMENT
+#           (προαιρετικά) AZURE_OPENAI_API_VERSION
+#   - COPILOT_MODEL (προαιρετικό) → μοντέλο για τον Copilot provider
 #   - GMAIL_USER    → το Gmail σας
 #   - GMAIL_APP_PASSWORD → Google Account > Security > App Passwords
 #   - EMAIL_TO      → παραλήπτες (κόμμα για πολλούς)
@@ -109,11 +111,22 @@ MarketNewsApp/
 3. Επιλέξτε "Mail" → "Windows Computer"
 4. Αντιγράψτε τον 16-ψήφιο κωδικό στο `.env`
 
+## AI Providers
+
+Το `AiSummarizer` υποστηρίζει τρεις providers, επιλέγονται μέσω `AI_PROVIDER` στο `.env`:
+
+| Provider | `AI_PROVIDER` | Απαιτούμενα env vars | Σημειώσεις |
+|---|---|---|---|
+| GitHub Copilot SDK (**default**) | *(κενό)* ή `copilot` | *(κανένα API key — χρειάζεται `copilot` CLI login)*, προαιρετικά `COPILOT_MODEL` | Χρησιμοποιεί το ήδη συνδεδεμένο Copilot session· λειτουργεί ακόμη και όταν το `api.groq.com`/OpenAI endpoints είναι μπλοκαρισμένα από εταιρικό firewall |
+| Groq | `groq` | `GROQ_API_KEY` | Απευθείας HTTPS στο `api.groq.com` |
+| Azure OpenAI / Foundry | `azure` (ή κενό με πλήρως συμπληρωμένα Azure vars) | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`, προαιρετικά `AZURE_OPENAI_API_VERSION` | — |
+
 ## Tech Stack
 
 - .NET 8
 - Microsoft.Playwright (browser automation)
-- Groq API (AI summarization via HTTP)
+- GitHub.Copilot.SDK (default AI summarization provider)
+- Groq API / Azure OpenAI (alternative AI summarization providers via HTTP)
 - MailKit (SMTP email)
 - Scriban (HTML templating)
 - DotNetEnv (.env file loading)

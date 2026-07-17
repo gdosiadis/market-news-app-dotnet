@@ -43,9 +43,6 @@ rootCommand.SetHandler(async (bool now, bool test, string? debugDomUrl) =>
     Console.WriteLine($"\n📅  Scheduler started — report will be sent daily at {sendTime}");
     Console.WriteLine("    Press Ctrl+C to stop.\n");
 
-    // Run immediately on first launch
-    RunPipeline();
-
     // Simple scheduler loop
     while (true)
     {
@@ -143,7 +140,7 @@ static void RunPipeline(bool dryRun = false)
     if (summaryCache != null)
         Console.WriteLine($"  💾  Same-day summary cache found — reusing unchanged sources, thinking only about new content");
 
-    var summarizer = new AiSummarizer();
+    var summarizer = AiSummarizer.CreateAsync().GetAwaiter().GetResult();
     try
     {
         Dictionary<string, SourceSummary> perSource;
@@ -165,9 +162,10 @@ static void RunPipeline(bool dryRun = false)
         var newPerSourceCache = cleaned.ToDictionary(
             kv => kv.Key,
             kv => new SummaryCache.SourceEntry(
-                SummaryCache.ComputeHash(kv.Value.Text),
+                SummaryCache.ComputeHash($"source-only-v2\n{kv.Value.Text}"),
                 perSource[kv.Key].Html,
-                perSource[kv.Key].Status));
+                perSource[kv.Key].Status,
+                perSource[kv.Key].TranslatedContent));
         var compositeHash = SummaryCache.ComputeCompositeHash(newPerSourceCache.Values.Select(v => v.ContentHash));
 
         string synthesis;

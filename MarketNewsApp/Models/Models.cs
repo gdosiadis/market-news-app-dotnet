@@ -73,5 +73,11 @@ public enum SourceStatus
     Error,          // AI call threw an exception
 }
 
-public record SourceSummary(string Html, SourceStatus Status, string Url, IReadOnlyList<string> Screenshots);
+public record SourceSummary(
+    string Html,
+    SourceStatus Status,
+    string Url,
+    IReadOnlyList<string> Screenshots,
+    string TranslatedContent,
+    string ScrapeDiagnostics);
 

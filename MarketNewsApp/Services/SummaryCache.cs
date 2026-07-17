@@ -14,7 +14,7 @@ namespace MarketNewsApp.Services;
 /// </summary>
 public static class SummaryCache
 {
-    public record SourceEntry(string ContentHash, string Html, SourceStatus Status);
+    public record SourceEntry(string ContentHash, string Html, SourceStatus Status, string? TranslatedContent = null);
     public record CachedRun(Dictionary<string, SourceEntry> PerSource, string CompositeHash, string Synthesis);
 
     private static string CacheDir =>

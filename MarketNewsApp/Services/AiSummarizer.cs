@@ -1,74 +1,30 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using GitHub.Copilot;
+using MarketNewsApp.Agents;
 using MarketNewsApp.Models;
 
 namespace MarketNewsApp.Services;
 
 public class AiSummarizer : IAsyncDisposable
 {
-    private static readonly string[] GroqModels =
-    [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "qwen/qwen3-32b",
-    ];
+    private const string SummaryPromptVersion = "source-only-v2";
 
-    private static readonly string[] SkipErrors =
-        ["rate_limit", "429", "decommissioned", "deprecated", "context_length", "context window", "too long", "bad_request"];
+    // Provider selection/implementation now lives under Agents/ (one file per
+    // provider: CopilotChatAgent, GroqChatAgent, AzureOpenAiChatAgent) behind
+    // the shared IChatAgent contract — AiSummarizer just talks to whichever
+    // one ChatAgentFactory picks. Settings come from an IAgentSettingsProvider
+    // (env vars by default) so a future DB-backed provider can be swapped in
+    // without changing this class or the agents themselves.
+    private readonly IChatAgent _agent;
 
-    private readonly HttpClient? _http;
-    private readonly bool _useAzure;
-    private readonly string _azureDeployment = string.Empty;
-    private readonly string _azureApiVersion = "2024-10-21";
-
-    // ── GitHub Copilot SDK (default provider) ──────────────────────────────────
-    private readonly bool _useCopilot;
-    private readonly string? _copilotModel;
-    private readonly SemaphoreSlim _copilotInitLock = new(1, 1);
-    private CopilotClient? _copilotClient;
-
-    public AiSummarizer()
+    private AiSummarizer(IChatAgent agent)
     {
-        var azureEndpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
-        var azureApiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
-        var azureDeployment = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT");
-        var azureApiVersion = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION");
-        var groqApiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
-        var provider = Environment.GetEnvironmentVariable("AI_PROVIDER")?.Trim().ToLowerInvariant();
+        _agent = agent;
+    }
 
-        // Azure OpenAI (explicit)
-        if (provider != "copilot" && provider != "groq" &&
-            !string.IsNullOrWhiteSpace(azureEndpoint) &&
-            !string.IsNullOrWhiteSpace(azureApiKey) &&
-            !string.IsNullOrWhiteSpace(azureDeployment))
-        {
-            _useAzure = true;
-            _azureDeployment = azureDeployment;
-            if (!string.IsNullOrWhiteSpace(azureApiVersion))
-                _azureApiVersion = azureApiVersion;
-
-            _http = new HttpClient { BaseAddress = new Uri(EnsureTrailingSlash(azureEndpoint)), Timeout = TimeSpan.FromMinutes(8) };
-            _http.DefaultRequestHeaders.Add("api-key", azureApiKey);
-            return;
-        }
-
-        // Groq (explicit via AI_PROVIDER=groq)
-        if (provider == "groq" && !string.IsNullOrWhiteSpace(groqApiKey))
-        {
-            _http = new HttpClient { BaseAddress = new Uri("https://api.groq.com/"), Timeout = TimeSpan.FromMinutes(8) };
-            _http.DefaultRequestHeaders.Add("Authorization", $"Bearer {groqApiKey}");
-            return;
-        }
-
-        // GitHub Copilot SDK (default) — uses the logged-in Copilot user,
-        // routed through GitHub endpoints that the corporate firewall allows.
-        _useCopilot = true;
-        _copilotModel = Environment.GetEnvironmentVariable("COPILOT_MODEL");
+    public static async Task<AiSummarizer> CreateAsync(IAgentSettingsProvider? settingsProvider = null)
+    {
+        var agent = await ChatAgentFactory.CreateAsync(settingsProvider);
+        return new AiSummarizer(agent);
     }
 
     // ── Step 2: Clean ─────────────────────────────────────────────────────────
@@ -104,8 +60,8 @@ public class AiSummarizer : IAsyncDisposable
         var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
 
         var systemPrompt = """
-            Είσαι Senior Investment Strategist που γράφει θεσμικές αναλύσεις στα ΕΛΛΗΝΙΚΑ.
-            Γράφεις σε αναλυτικό, επαγγελματικό ύφος (τύπου research note επενδυτικού οίκου).
+            Είσαι επιμελητής που αποδίδει στα ελληνικά ΜΟΝΟ τις πληροφορίες του παρεχόμενου scraped κειμένου.
+            Η ακρίβεια και η πιστότητα στην πηγή είναι σημαντικότερες από την έκταση ή την ερμηνεία.
             Χρησιμοποιείς HTML formatting:
             - <h3> για υποενότητες
             - <ul>/<li> για bullet points (κάθε <li> πλήρης πρόταση/ανάλυση, όχι λέξη-κλειδί)
@@ -113,23 +69,25 @@ public class AiSummarizer : IAsyncDisposable
             - <table class="market-table"> με <th>/<td> για αριθμητικά δεδομένα & αποδόσεις
             - Emoji για οπτική σήμανση (📈📉⚠️✅🏦🌍💰🤖🛢️🎯)
             ΚΑΝΟΝΕΣ:
-            1. Αναλύεις ΑΠΟΚΛΕΙΣΤΙΚΑ το περιεχόμενο της ΣΥΓΚΕΚΡΙΜΕΝΗΣ πηγής που σου δίνεται. ΔΕΝ προσθέτεις, ΔΕΝ ανακατεύεις πληροφορίες από άλλες πηγές ή από δική σου γνώση.
-            2. Κάνεις ΣΑΦΕΣ σε όλη την ενότητα από πού προέρχεται κάθε πληροφορία (π.χ. «Σύμφωνα με τη συγκεκριμένη πηγή…», «Η ανάλυση της πηγής σημειώνει…»).
-            3. Γράφεις ΕΚΤΕΝΩΣ και σε ΒΑΘΟΣ — ΑΠΑΓΟΡΕΥΕΤΑΙ το περιληπτικό ύφος. Τουλάχιστον 3-5 ουσιαστικές παράγραφοι ανά πηγή.
-            4. Κάθε ισχυρισμός με ΣΥΓΚΕΚΡΙΜΕΝΑ στοιχεία: αριθμούς, ποσοστά, ονόματα δεικτών/εταιρειών/κεντρικών τραπεζών, ημερομηνίες, επίπεδα τιμών.
-            5. Αναλύεις, δεν παραθέτεις απλά — εξηγείς ΓΙΑΤΙ και ΤΙ ΣΗΜΑΙΝΕΙ για τον επενδυτή.
+            1. Χρησιμοποιείς ΑΠΟΚΛΕΙΣΤΙΚΑ το περιεχόμενο της συγκεκριμένης πηγής. Ποτέ δεν προσθέτεις γεγονότα, αιτίες, προβλέψεις, τιμές, ημερομηνίες, συστάσεις ή γενική γνώση που δεν εμφανίζονται ρητά στο scraped κείμενο.
+            2. Κάθε πρόταση πρέπει να μπορεί να εντοπιστεί ή να συναχθεί άμεσα από μία ή περισσότερες προτάσεις του scraped κειμένου. Αν δεν υπάρχει ρητή βάση, την παραλείπεις.
+            3. Δεν ερμηνεύεις «τι σημαίνει για τον επενδυτή», δεν εξηγείς αιτίες και δεν κάνεις επενδυτική σύσταση, εκτός αν η ίδια η πηγή το δηλώνει ρητά.
+            4. Διατηρείς ακριβώς όλους τους αριθμούς, ποσοστά, ημερομηνίες, ονόματα και επιφυλάξεις που αναφέρει η πηγή. Δεν συμπληρώνεις κενά.
+            5. Αν η πηγή δεν περιέχει αρκετά στοιχεία για μία ενότητα, την παραλείπεις. Μην επιμηκύνεις το κείμενο με γενικές διατυπώσεις.
             """;
 
         var siteList = sites.ToList();
         var sections = new string[siteList.Count];
         var statuses = new SourceStatus[siteList.Count];
+        var translations = new string[siteList.Count];
 
         // Parallel AI calls — max 3 concurrent to avoid rate limiting
         using var aiSemaphore = new SemaphoreSlim(3);
+        using var translationSemaphore = new SemaphoreSlim(3);
         var siteTasks = siteList.Select(async (kv, idx) =>
         {
             var (name, info) = (kv.Key, kv.Value);
-            var contentHash = SummaryCache.ComputeHash(info.Text);
+            var contentHash = SummaryCache.ComputeHash($"{SummaryPromptVersion}\n{info.Text}");
 
             if (previousCache != null &&
                 previousCache.TryGetValue(name, out var cachedEntry) &&
@@ -137,6 +95,22 @@ public class AiSummarizer : IAsyncDisposable
             {
                 statuses[idx] = cachedEntry.Status;
                 sections[idx] = cachedEntry.Html;
+                if (cachedEntry.TranslatedContent is not null)
+                {
+                    translations[idx] = cachedEntry.TranslatedContent;
+                }
+                else
+                {
+                    await translationSemaphore.WaitAsync();
+                    try
+                    {
+                        translations[idx] = await TranslateScrapedContentAsync(info.Text, name);
+                    }
+                    finally
+                    {
+                        translationSemaphore.Release();
+                    }
+                }
                 Console.WriteLine($"     ♻️  {name} — reused cached summary (unchanged content)");
                 return;
             }
@@ -144,6 +118,7 @@ public class AiSummarizer : IAsyncDisposable
             if (string.IsNullOrWhiteSpace(info.Text) || info.Text.StartsWith("["))
             {
                 statuses[idx] = SourceStatus.Blocked;
+                translations[idx] = "Δεν ανακτήθηκε περιεχόμενο από αυτή την πηγή σήμερα.";
                 sections[idx] =
                     $"""
                     <div class="section">
@@ -163,22 +138,23 @@ public class AiSummarizer : IAsyncDisposable
             var userPrompt = $"""
                 Σήμερα είναι {today}. Παρακάτω δίνεται το περιεχόμενο ΑΠΟΚΛΕΙΣΤΙΚΑ από την πηγή «{name}» ({info.Url}) για την περίοδο {sinceDate} – {today}.
 
-                Σύνταξε μία ΕΚΤΕΝΗ, ΒΑΘΙΑ ΑΝΑΛΥΤΙΚΗ ενότητα στα ΕΛΛΗΝΙΚΑ ΜΟΝΟ για όσα αναφέρει αυτή η πηγή.
+                Απόδωσε στα ελληνικά μόνο τα γεγονότα, αριθμούς και ρητές θέσεις που εμφανίζονται στο παρακάτω scraped κείμενο.
 
                 Ξεκίνα ΑΚΡΙΒΩΣ ως εξής:
                 <div class="section">
                 <h2>📄 {name}</h2>
                 <p class="source-tag">Πηγή: <a href="{info.Url}">{name}</a></p>
 
-                Στη συνέχεια ανάλυσε σε βάθος (ΤΟΥΛΑΧΙΣΤΟΝ 3-5 παράγραφοι):
-                - 📰 Τα σημαντικότερα γεγονότα / ειδήσεις / θέματα που θίγει η πηγή και γιατί έχουν σημασία
-                - 📊 Όλα τα συγκεκριμένα αριθμητικά δεδομένα (δείκτες, αποδόσεις, επιτόκια, μάκρο, εμπορεύματα, νομίσματα) — σε <table class="market-table"> όπου υπάρχουν
-                - 🎯 Ποια η στρατηγική οπτική/τοποθέτηση της πηγής (overweight/underweight, κλάδοι, γεωγραφίες) και τι σημαίνει για τον επενδυτή
+                Στη συνέχεια παρουσίασε, μόνο όταν περιέχονται ρητά στην πηγή:
+                - 📰 Τα γεγονότα / ειδήσεις / θέματα που θίγει
+                - 📊 Τα συγκεκριμένα αριθμητικά δεδομένα σε <table class="market-table"> όπου αυτό βοηθά την πιστή παρουσίαση
+                - 🎯 Τη στρατηγική θέση της πηγής (μόνο εάν δηλώνεται ρητά)
                 Κλείσε την ενότητα με </div>.
 
                 ΣΗΜΑΝΤΙΚΟ:
                 - Κάνε ΣΑΦΕΣ ότι ΟΛΕΣ οι πληροφορίες προέρχονται από «{name}» (χρησιμοποίησε φράσεις όπως «Σύμφωνα με την {name}…»).
-                - ΜΗΝ προσθέτεις πληροφορίες από άλλες πηγές ή από δική σου γνώση. Αν κάτι δεν αναφέρεται στο κείμενο, μην το επινοείς.
+                - ΜΗΝ προσθέτεις πληροφορίες από άλλες πηγές ή από δική σου γνώση. Αν κάτι δεν αναφέρεται στο κείμενο, μην το αναφέρεις.
+                - ΜΗΝ παρουσιάζεις συμπεράσματα, αιτίες, προβλέψεις ή επενδυτικές επιπτώσεις ως δικές σου ερμηνείες.
 
                 ⚠️ ΚΡΙΣΙΜΟ: Αν το ΠΕΡΙΕΧΟΜΕΝΟ ΠΗΓΗΣ παρακάτω ΔΕΝ περιέχει ουσιαστικό χρηματοοικονομικό/αναλυτικό υλικό — π.χ. είναι μόνο νομική αποποίηση ευθύνης (disclaimer), όροι χρήσης, cookie/privacy notice, επιλογή κατηγορίας επενδυτή, ή απαιτεί σύνδεση/αποδοχή όρων — ΜΗΝ γράψεις ανάλυση και ΜΗΝ εξηγήσεις γιατί. Επίστρεψε ΑΚΡΙΒΩΣ και ΜΟΝΟ την εξής μία γραμμή, χωρίς τίποτα άλλο:
                 NO_CONTENT
@@ -186,7 +162,7 @@ public class AiSummarizer : IAsyncDisposable
                 ΠΕΡΙΕΧΟΜΕΝΟ ΠΗΓΗΣ «{name}»:
                 {textContent}
 
-                Γράψε ΜΟΝΟ το HTML content (χωρίς <html>/<head>/<body> tags), εκτενώς και με αριθμούς όπου υπάρχουν — ή σκέτο NO_CONTENT αν δεν υπάρχει ουσιαστικό περιεχόμενο.
+                Γράψε ΜΟΝΟ το HTML content (χωρίς <html>/<head>/<body> tags), με πιστή απόδοση του διαθέσιμου περιεχομένου — ή σκέτο NO_CONTENT αν δεν υπάρχει ουσιαστικό περιεχόμενο.
                 """;
 
             await aiSemaphore.WaitAsync();
@@ -194,7 +170,7 @@ public class AiSummarizer : IAsyncDisposable
             {
                 var html = await ChatAsync(
                     [new("system", systemPrompt), new("user", userPrompt)],
-                    maxTokens: 3500, temperature: 0.3);
+                    maxTokens: 3500, temperature: 0.1);
                 html = StripLeadingPreamble(StripCodeFences(html));
 
                 if (IsNoContent(html))
@@ -207,11 +183,13 @@ public class AiSummarizer : IAsyncDisposable
                     statuses[idx] = ClassifyStatus(info.Text, html);
                     sections[idx] = html;
                 }
+                translations[idx] = await TranslateScrapedContentAsync(info.Text, name);
                 Console.WriteLine($"     {StatusIcon(statuses[idx])}  {name} — {statuses[idx]}");
             }
             catch (Exception ex)
             {
                 statuses[idx] = SourceStatus.Error;
+                translations[idx] = "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.";
                 Console.WriteLine($"     {StatusIcon(SourceStatus.Error)}  {name} — Error: {ex.Message}");
                 sections[idx] =
                     $"""
@@ -231,10 +209,42 @@ public class AiSummarizer : IAsyncDisposable
 
         var result = new Dictionary<string, SourceSummary>(siteList.Count);
         for (int i = 0; i < siteList.Count; i++)
-            result[siteList[i].Key] = new SourceSummary(sections[i] ?? "", statuses[i], siteList[i].Value.Url, siteList[i].Value.Screenshots);
+            result[siteList[i].Key] = new SourceSummary(
+                sections[i] ?? "",
+                statuses[i],
+                siteList[i].Value.Url,
+                siteList[i].Value.Screenshots,
+                translations[i] ?? "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.",
+                siteList[i].Value.Diagnostics);
 
         PrintStatusSummary(result);
         return result;
+    }
+
+    private async Task<string> TranslateScrapedContentAsync(string scrapedContent, string sourceName)
+    {
+        if (string.IsNullOrWhiteSpace(scrapedContent) || scrapedContent.StartsWith("["))
+            return "Δεν ανακτήθηκε περιεχόμενο από αυτή την πηγή σήμερα.";
+
+        try
+        {
+            var content = scrapedContent.Length > 30000 ? scrapedContent[..30000] : scrapedContent;
+            var translation = await ChatAsync(
+                [new("user", $"""
+                    Μετέφρασε πιστά στα ελληνικά το παρακάτω scraped περιεχόμενο από την πηγή «{sourceName}».
+                    Μην το συνοψίσεις, μην προσθέσεις πληροφορίες και μην χρησιμοποιήσεις HTML ή Markdown.
+                    Διατήρησε τις αλλαγές γραμμής, τους αριθμούς, τα ονόματα εταιρειών και τους χρηματοοικονομικούς όρους.
+
+                    ΠΕΡΙΕΧΟΜΕΝΟ:
+                    {content}
+                    """)], maxTokens: 7500, temperature: 0.1);
+            return StripCodeFences(translation).Trim();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"     ⚠️  {sourceName} — translation failed: {ex.Message}");
+            return "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.";
+        }
     }
 
     // Content thresholds for status classification
@@ -422,12 +432,61 @@ public class AiSummarizer : IAsyncDisposable
         foreach (var (name, summary) in perSource)
         {
             if (string.IsNullOrEmpty(summary.Html)) continue;
-            parts.Add(summary.Html);
+            parts.Add(AddInlineTranslatedContent(summary.Html, summary.TranslatedContent, summary.ScrapeDiagnostics));
             if (summary.Screenshots.Count > 0)
                 parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
         }
         parts.Add(footer);
         return string.Join("\n", parts);
+    }
+
+    private static string AddInlineTranslatedContent(string html, string translatedContent, string diagnostics)
+    {
+        const string sourceTagPattern = @"<p\s+class=""source-tag"">.*?</p>";
+        var content = System.Net.WebUtility.HtmlEncode(translatedContent);
+        var interactions = FormatPageInteractions(diagnostics);
+        var replacement = $"""
+            <p class="source-tag">Πηγή:</p>
+            <details class="translated-content" style="margin:0 0 14px;padding:8px 10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;">
+            <summary style="color:#3fb950;cursor:pointer;">Προβολή πλήρους μεταφρασμένου περιεχομένου</summary>
+            <p style="margin:10px 0 6px;color:#d29922;font-size:13px;"><strong>Ενέργειες στη σελίδα</strong></p>
+            {interactions}
+            <pre style="margin-top:10px;white-space:pre-wrap;word-break:break-word;font-family:monospace;font-size:12px;color:#c9d1d9;">{content}</pre>
+            </details>
+            """;
+        return Regex.Replace(html, sourceTagPattern, replacement, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    }
+
+    private static string FormatPageInteractions(string diagnostics)
+    {
+        var actions = diagnostics.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(entry => entry switch
+            {
+                var value when value.StartsWith("followed link ", StringComparison.OrdinalIgnoreCase) =>
+                    "Ανοίχθηκε ο σύνδεσμος του άρθρου από τη σελίδα καταλόγου.",
+                var value when value.StartsWith("dismissed overlay via '", StringComparison.OrdinalIgnoreCase) =>
+                    $"Πατήθηκε το κουμπί «{ExtractQuotedValue(value)}» για κλείσιμο αναδυόμενου παραθύρου/όρων.",
+                var value when value.StartsWith("expanded ", StringComparison.OrdinalIgnoreCase) =>
+                    $"Πατήθηκε «{value[(value.IndexOf(':') + 1)..].Trim()}» για εμφάνιση επιπλέον περιεχομένου.",
+                var value when value.StartsWith("closed ", StringComparison.OrdinalIgnoreCase) && value.Contains("obstructing widget", StringComparison.OrdinalIgnoreCase) =>
+                    "Έκλεισαν αναδυόμενα στοιχεία που εμπόδιζαν την ανάγνωση της σελίδας.",
+                _ => null,
+            })
+            .Where(action => action is not null)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (actions.Count == 0)
+            return "<p style=\"margin:0;color:#8b949e;font-size:12px;\">Δεν χρειάστηκε να πατηθεί κάποιο στοιχείο στη σελίδα.</p>";
+
+        return $"<ul style=\"margin:0;padding-left:18px;color:#c9d1d9;font-size:12px;\">{string.Join(string.Empty, actions.Select(action => $"<li>{System.Net.WebUtility.HtmlEncode(action)}</li>"))}</ul>";
+    }
+
+    private static string ExtractQuotedValue(string text)
+    {
+        var start = text.IndexOf('\'');
+        var end = start < 0 ? -1 : text.IndexOf('\'', start + 1);
+        return start >= 0 && end > start ? text[(start + 1)..end] : "επιβεβαίωση";
     }
 
     // Renders a source's page screenshots (charts/tables captured verbatim from the live
@@ -475,220 +534,14 @@ public class AiSummarizer : IAsyncDisposable
         return string.Join("\n\n", sections);
     }
 
-    private async Task<string> ChatAsync(List<ChatMessage> messages, int maxTokens = 4096, double temperature = 0.3)
-    {
-        if (_useCopilot)
-            return await ChatViaCopilotAsync(messages);
+    private Task<string> ChatAsync(List<ChatMessage> messages, int maxTokens = 4096, double temperature = 0.3) =>
+        _agent.ChatAsync(messages, maxTokens, temperature);
 
-        if (_useAzure)
-        {
-            var request = new
-            {
-                messages = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
-                temperature,
-                max_tokens = maxTokens,
-            };
-
-            var json = JsonSerializer.Serialize(request);
-            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-            var path = $"openai/deployments/{_azureDeployment}/chat/completions?api-version={_azureApiVersion}";
-            var response = await _http!.PostAsync(path, content);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorBody = await response.Content.ReadAsStringAsync();
-                throw new HttpRequestException($"Azure OpenAI API error: {response.StatusCode} - {errorBody}");
-            }
-
-            var responseJson = await response.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(responseJson);
-            return doc.RootElement
-                .GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString() ?? "";
-        }
-
-        foreach (var model in GroqModels)
-        {
-            try
-            {
-                var request = new
-                {
-                    model,
-                    messages = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
-                    temperature,
-                    max_tokens = maxTokens,
-                };
-
-                var json = JsonSerializer.Serialize(request);
-                var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-                var response = await _http!.PostAsync("openai/v1/chat/completions", content);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    var errorBody = (await response.Content.ReadAsStringAsync()).ToLower();
-                    if (SkipErrors.Any(e => errorBody.Contains(e)))
-                    {
-                        Console.WriteLine($"  ⚠️  {model} unavailable ({response.StatusCode}), trying next...");
-                        continue;
-                    }
-                    throw new HttpRequestException($"Groq API error: {response.StatusCode} - {errorBody}");
-                }
-
-                var responseJson = await response.Content.ReadAsStringAsync();
-                using var doc = JsonDocument.Parse(responseJson);
-                return doc.RootElement
-                    .GetProperty("choices")[0]
-                    .GetProperty("message")
-                    .GetProperty("content")
-                    .GetString() ?? "";
-            }
-            catch (HttpRequestException) { throw; }
-            catch (Exception ex)
-            {
-                var err = ex.Message.ToLower();
-                if (SkipErrors.Any(e => err.Contains(e)))
-                {
-                    Console.WriteLine($"  ⚠️  {model} unavailable ({ex.GetType().Name}), trying next...");
-                    continue;
-                }
-                throw;
-            }
-        }
-        throw new InvalidOperationException("All Groq models rate-limited. Try again later or upgrade tier at https://console.groq.com/settings/billing");
-    }
-
-    // ── GitHub Copilot SDK chat ──────────────────────────────────────────
-    private string ProviderName => _useCopilot ? "GitHub Copilot" : _useAzure ? "Azure OpenAI" : "Groq";
-
-    // Corporate TLS-inspecting proxies (e.g. Fortinet) re-sign HTTPS traffic with a
-    // private root CA that's trusted by Windows but not by Node's bundled CA store,
-    // which breaks the Copilot CLI's fetch() calls to api.github.com. If a CA bundle
-    // has been exported to this path, point Node at it so the CLI trusts the proxy.
-    private static readonly string CorporateCaBundlePath =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MarketNewsApp", "corporate-ca-bundle.pem");
-
-    private static void EnsureCorporateCaTrust()
-    {
-        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("NODE_EXTRA_CA_CERTS")))
-            return;
-        if (File.Exists(CorporateCaBundlePath))
-            Environment.SetEnvironmentVariable("NODE_EXTRA_CA_CERTS", CorporateCaBundlePath);
-    }
-
-    private async Task<CopilotClient> GetCopilotClientAsync()
-    {
-        if (_copilotClient is not null) return _copilotClient;
-        await _copilotInitLock.WaitAsync();
-        try
-        {
-            if (_copilotClient is null)
-            {
-                EnsureCorporateCaTrust();
-                var client = new CopilotClient();
-                await client.StartAsync();
-                _copilotClient = client;
-            }
-        }
-        finally { _copilotInitLock.Release(); }
-        return _copilotClient;
-    }
-
-    // Transient errors seen under this environment's corporate TLS-inspecting proxy:
-    // concurrent session.create calls occasionally fail the CLI's internal GitHub
-    // auth check even though the credentials are valid. A short retry clears it up
-    // almost always, since it's a proxy/connection hiccup, not a real auth problem.
-    // "this organization has been disabled" has also been observed to be one of these
-    // flaky hiccups (confirmed by the same source succeeding again on a later run
-    // within minutes with no account/config changes in between) rather than a genuine,
-    // persistent account/org suspension — so it's retried too instead of failing fast.
-    private static readonly string[] TransientCopilotErrors =
-    [
-        "fetch oauth user login",
-        "network fetch failed",
-        "communication error with copilot cli",
-        "this organization has been disabled",
-    ];
-
-    private async Task<string> ChatViaCopilotAsync(List<ChatMessage> messages)
-    {
-        const int maxAttempts = 4;
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                return await ChatViaCopilotAttemptAsync(messages);
-            }
-            catch (Exception ex) when (attempt < maxAttempts && TransientCopilotErrors.Any(e => ex.Message.ToLowerInvariant().Contains(e)))
-            {
-                var delay = TimeSpan.FromMilliseconds(1500 * attempt);
-                Console.WriteLine($"     ⏳  Transient Copilot error (attempt {attempt}/{maxAttempts}), retrying in {delay.TotalSeconds:F1}s...");
-                await Task.Delay(delay);
-            }
-        }
-    }
-
-    private async Task<string> ChatViaCopilotAttemptAsync(List<ChatMessage> messages)
-    {
-        var client = await GetCopilotClientAsync();
-
-        var systemContent = string.Join("\n\n", messages.Where(m => m.Role == "system").Select(m => m.Content));
-        var userContent = string.Join("\n\n", messages.Where(m => m.Role != "system").Select(m => m.Content));
-
-        var config = new SessionConfig
-        {
-            OnPermissionRequest = PermissionHandler.ApproveAll,
-        };
-        if (!string.IsNullOrWhiteSpace(_copilotModel))
-            config.Model = _copilotModel;
-        if (!string.IsNullOrWhiteSpace(systemContent))
-            config.SystemMessage = new SystemMessageConfig
-            {
-                Mode = SystemMessageMode.Append,
-                Content = systemContent,
-            };
-
-        await using var session = await client.CreateSessionAsync(config);
-
-        var done = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var buffer = new System.Text.StringBuilder();
-
-        using var sub = session.On<SessionEvent>(evt =>
-        {
-            switch (evt)
-            {
-                case AssistantMessageEvent msg:
-                    buffer.Clear();
-                    buffer.Append(msg.Data.Content);
-                    break;
-                case SessionErrorEvent err:
-                    done.TrySetException(new InvalidOperationException($"Copilot session error: {err.Data.Message}"));
-                    break;
-                case SessionIdleEvent:
-                    done.TrySetResult(buffer.ToString());
-                    break;
-            }
-        });
-
-        await session.SendAsync(new MessageOptions { Prompt = userContent });
-        return await done.Task;
-    }
+    private string ProviderName => _agent.ProviderName;
 
     public async ValueTask DisposeAsync()
     {
-        if (_copilotClient is not null)
-        {
-            try { await _copilotClient.StopAsync(); }
-            catch { try { await _copilotClient.ForceStopAsync(); } catch { } }
-            _copilotClient = null;
-        }
-        _http?.Dispose();
-        _copilotInitLock.Dispose();
+        await _agent.DisposeAsync();
         GC.SuppressFinalize(this);
     }
-
-    private static string EnsureTrailingSlash(string url) => url.EndsWith('/') ? url : url + "/";
 }
-
-public record ChatMessage(string Role, string Content);
