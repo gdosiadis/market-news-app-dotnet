@@ -155,6 +155,15 @@
     color: #58a6ff;
     margin-bottom: 6px;
   }
+  .source-title {
+    margin: 0 0 6px;
+    font-size: 17px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .source-title a { color: #58a6ff; text-decoration: none; }
+  .source-title a:hover { text-decoration: underline; }
   .source-url {
     font-size: 12px;
     margin-bottom: 14px;
@@ -211,6 +220,9 @@
     margin: 12px 0;
     font-size: 13px;
     color: #c9d1d9;
+  }
+  @media only screen and (max-width: 600px) {
+    .source-title { font-size: 16px !important; }
   }
 </style>
 </head>

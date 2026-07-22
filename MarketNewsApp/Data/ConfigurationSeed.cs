@@ -26,6 +26,10 @@ internal static class ConfigurationSeed
     public static readonly AgentConfiguration Agent = new() { Id = 1, Provider = "copilot", CopilotModel = null, AzureApiVersion = "2024-10-21" };
     public static readonly ReportConfiguration Report = new() { Id = 1, LookbackDays = 10, MaxSummarySourceCharacters = 20000, MaxTranslationSourceCharacters = 30000, IncludeTranslatedContent = true, IncludeSourceList = true };
     public static readonly FeatureFlag[] Flags = [new() { Id = 1, Key = "scrape-cache", IsEnabled = true }, new() { Id = 2, Key = "summary-cache", IsEnabled = true }];
+    public static readonly AdminUser AdminUser = new() { Id = 1, Username = "admin", PasswordHash = "SET_AT_FIRST_LOGIN", Role = "Administrator", IsActive = true, CreatedAt = new DateTimeOffset(2026, 7, 17, 0, 0, 0, TimeSpan.Zero) };
+    public static readonly EmailRecipient[] Recipients = [new() { Id = 1, Address = "recipient1@example.com", DisplayName = "Primary recipient", IsEnabled = true }, new() { Id = 2, Address = "recipient2@example.com", DisplayName = "Secondary recipient", IsEnabled = true }];
+    public static readonly ReportTemplateConfiguration ReportTemplate = new() { Id = 1, Name = "Daily market report", SubjectTemplate = "Market News AI - {{date}}", BodyTemplate = "{{ai_summary}}", IsDefault = true, IsEnabled = true };
+    public static readonly ApplicationSetting[] ApplicationSettings = [new() { Id = 1, Key = "timezone", Value = "Europe/Athens", Description = "IANA timezone for scheduled reports" }, new() { Id = 2, Key = "configuration-cache-minutes", Value = "5", Description = "Runtime configuration refresh interval" }];
 
     private static ScrapeSourceConfiguration Source(int id, string name, string url, string selectors, string waitFor, int timeoutMs, int sortOrder) =>
         new() { Id = id, Name = name, Url = url, SelectorsJson = selectors, WaitFor = waitFor, TimeoutMs = timeoutMs, IsEnabled = true, SortOrder = sortOrder };

@@ -366,12 +366,27 @@ public class AiSummarizer : IAsyncDisposable
         foreach (var (name, summary) in perSource)
         {
             if (string.IsNullOrEmpty(summary.Html)) continue;
-            parts.Add(_configuration.Report.IncludeTranslatedContent ? AddInlineTranslatedContent(summary.Html, summary.TranslatedContent, summary.ScrapeDiagnostics) : summary.Html);
+            var section = RenderSourceSection(summary.Html, name, summary.Url);
+            parts.Add(_configuration.Report.IncludeTranslatedContent ? AddInlineTranslatedContent(section, summary.TranslatedContent, summary.ScrapeDiagnostics) : section);
             if (summary.Screenshots.Count > 0)
                 parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
         }
         if (_configuration.Report.IncludeSourceList) parts.Add(footer);
         return string.Join("\n", parts);
+    }
+
+    private static string RenderSourceSection(string html, string sourceName, string sourceUrl)
+    {
+        var encodedName = System.Net.WebUtility.HtmlEncode(sourceName);
+        var encodedUrl = System.Net.WebUtility.HtmlEncode(sourceUrl);
+        var title = $"<h2 class=\"source-title\"><a href=\"{encodedUrl}\" target=\"_blank\">📄 {encodedName}</a></h2>";
+        var sourceTag = $"<p class=\"source-tag\">Πηγή: <a href=\"{encodedUrl}\" target=\"_blank\">{encodedUrl}</a></p>";
+
+        var headingPattern = new Regex(@"<h2(?:\s[^>]*)?>.*?</h2>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        var sourceTagPattern = new Regex(@"<p\s+class=\""source-tag\""[^>]*>.*?</p>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        var section = headingPattern.Replace(html, title, count: 1);
+        section = sourceTagPattern.Replace(section, sourceTag, count: 1);
+        return section;
     }
 
     private static string AddInlineTranslatedContent(string html, string translatedContent, string diagnostics)

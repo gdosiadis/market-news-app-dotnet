@@ -1,0 +1,13 @@
+@model MarketNewsAdmin.Models.ConfigurationFormViewModel
+@{ ViewData["Title"] = Model.Id is null ? "Add configuration" : "Edit configuration"; var source = Model.Section == "sources"; var prompt = Model.Section == "prompts"; var agent = Model.Section == "agents"; var schedule = Model.Section == "schedules"; var recipient = Model.Section == "recipients"; var template = Model.Section == "templates"; var setting = Model.Section == "settings"; }
+<div class="page-actions"><p>@(Model.Id is null ? "Create a new" : "Update this") @Model.Section configuration item.</p><a class="button secondary" asp-action="Index" asp-route-section="@Model.Section"><i data-lucide="arrow-left"></i>Back to list</a></div>
+<form method="post" class="panel form-panel"><input asp-for="Section" type="hidden"/><input asp-for="Id" type="hidden"/><div asp-validation-summary="ModelOnly" class="validation"></div>
+<div class="form-grid"><label>@(source ? "Source name" : prompt ? "Prompt key" : agent ? "Provider" : schedule ? "Daily send time" : recipient ? "Email address" : template ? "Template name" : setting ? "Setting key" : "Feature flag key")<input asp-for="Primary" placeholder="@(agent ? "copilot, groq or azure" : "")"/></label>
+<label>@(source ? "Source URL" : prompt ? "Prompt content" : agent ? "Copilot model" : schedule ? "Schedule label" : recipient ? "Display name" : template ? "Subject template" : setting ? "Value" : "Description")<textarea asp-for="Secondary" rows="@(prompt ? 8 : 2)"></textarea></label>
+@if (source) { <label>CSS selectors (JSON)<textarea asp-for="Tertiary" rows="4"></textarea></label><label>Wait selector<input asp-for="Detail"/></label><label>Timeout (ms)<input asp-for="Number" type="number" min="1000" max="120000"/></label> }
+@if (agent) { <label>Azure endpoint<input asp-for="Tertiary"/></label><label>Azure deployment<input asp-for="Detail"/></label> }
+@if (template) { <label class="full-width">Body template<textarea asp-for="Tertiary" rows="10"></textarea></label> }
+@if (setting) { <label>Operator note<input asp-for="Tertiary"/></label> }
+</div>
+@if (!setting && !agent) { <label class="switch-row"><input asp-for="IsEnabled" type="checkbox"/><span></span>Enabled for production</label> }
+<div class="form-footer"><button class="button primary" type="submit"><i data-lucide="save"></i>Save changes</button><a class="button secondary" asp-action="Index" asp-route-section="@Model.Section">Cancel</a></div></form>

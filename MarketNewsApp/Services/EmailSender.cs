@@ -12,13 +12,15 @@ namespace MarketNewsApp.Services;
 public class EmailSender
 {
     private readonly EmailConfiguration _configuration;
+    private readonly ReportTemplateConfiguration? _reportTemplate;
 
-    public EmailSender(EmailConfiguration configuration)
+    public EmailSender(EmailConfiguration configuration, ReportTemplateConfiguration? reportTemplate = null)
     {
         _configuration = configuration;
+        _reportTemplate = reportTemplate;
     }
 
-    public void Send(string aiSummary, Dictionary<string, SourceSummary> perSource)
+    public void Send(string aiSummary, Dictionary<string, SourceSummary> perSource, IReadOnlyList<string> managedRecipients)
     {
         static string? EnvOrNull(string name)
         {
@@ -42,7 +44,9 @@ public class EmailSender
         if (isGmail && (gmailUser is null || gmailPass is null))
             throw new InvalidOperationException("GMAIL_USER / GMAIL_APP_PASSWORD not set (or configure SMTP_HOST for a different provider)");
 
-        var recipients = _configuration.Recipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var recipients = managedRecipients.Count > 0
+            ? managedRecipients
+            : _configuration.Recipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var reportDate = DateTime.Now.ToString("dddd, dd MMMM yyyy");
         var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
 
@@ -53,7 +57,8 @@ public class EmailSender
         message.From.Add(new MailboxAddress(_configuration.FromDisplayName, fromAddress));
         foreach (var addr in recipients)
             message.To.Add(MailboxAddress.Parse(addr));
-        message.Subject = _configuration.SubjectTemplate.Replace("{{date}}", DateTime.Now.ToString("dd/MM/yyyy"), StringComparison.Ordinal);
+        var subjectTemplate = _reportTemplate?.SubjectTemplate ?? _configuration.SubjectTemplate;
+        message.Subject = subjectTemplate.Replace("{{date}}", DateTime.Now.ToString("dd/MM/yyyy"), StringComparison.Ordinal);
 
         var builder = new BodyBuilder();
         builder.TextBody = $"Εβδομαδιαία Ενημέρωση Αγορών — {reportDate}\n\n" +
@@ -118,9 +123,17 @@ public class EmailSender
         var templateText = File.ReadAllText(templatePath);
         var template = Template.Parse(templateText);
 
+        var reportContent = aiSummary;
+        if (_reportTemplate is { IsEnabled: true } && !string.IsNullOrWhiteSpace(_reportTemplate.BodyTemplate))
+        {
+            var reportTemplate = Template.Parse(_reportTemplate.BodyTemplate);
+            if (!reportTemplate.HasErrors)
+                reportContent = reportTemplate.Render(new { ai_summary = aiSummary, report_date = reportDate, since_date = sinceDate });
+        }
+
         return template.Render(new
         {
-            ai_summary = aiSummary,
+            ai_summary = reportContent,
             report_date = reportDate,
             since_date = sinceDate,
         });

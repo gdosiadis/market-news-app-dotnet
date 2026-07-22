@@ -3,6 +3,8 @@ using MarketNewsApp.Models;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using System.Globalization;
+using System.Xml.Linq;
 
 namespace MarketNewsApp.Services;
 
@@ -127,41 +129,20 @@ public class Scraper
                 diag.Add($"wait-for selector '{site.WaitFor}' timed out (page may not have hydrated)");
             }
 
-            // Some sites configure a landing/list page as their Url because the real article
-            // (with the actual analysis text and chart figures) lives at a separate,
-            // dynamically-named URL only reachable via a link from that landing page.
+            var recentArticleTexts = new List<string>();
+
+            // Some sites configure a landing/list page as their Url because the real articles
+            // live on separate, dynamically-named pages. Read every linked article published
+            // inside the report window, rather than treating the first card as the whole source.
             if (!string.IsNullOrWhiteSpace(site.FollowFirstLinkSelector))
             {
                 try
                 {
-                    var link = await page.QuerySelectorAsync(site.FollowFirstLinkSelector);
-                    var href = link is null ? null : await link.GetAttributeAsync("href");
-                    if (!string.IsNullOrWhiteSpace(href))
-                    {
-                        // hrefs are often relative (e.g. "../../Market-Commentary/...") — resolve
-                        // against the current page URL since GotoAsync won't do it implicitly.
-                        var absoluteUrl = Uri.TryCreate(new Uri(page.Url), href, out var resolved)
-                            ? resolved.ToString()
-                            : href;
-                        await page.GotoAsync(absoluteUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
-                        diag.Add($"followed link '{site.FollowFirstLinkSelector}' → {page.Url}");
-                        try
-                        {
-                            await page.WaitForSelectorAsync(site.WaitFor, new() { Timeout = 8000 });
-                        }
-                        catch (TimeoutException)
-                        {
-                            diag.Add($"wait-for selector '{site.WaitFor}' timed out on followed article page");
-                        }
-                    }
-                    else
-                    {
-                        diag.Add($"follow-link selector '{site.FollowFirstLinkSelector}' matched no href — staying on landing page");
-                    }
+                    recentArticleTexts = await ReadRecentLinkedArticlesAsync(page, site, diag);
                 }
                 catch (Exception ex)
                 {
-                    diag.Add($"follow-link step failed ({ex.Message}) — staying on landing page");
+                    diag.Add($"article-list step failed ({ex.Message}) — staying on landing page");
                 }
             }
 
@@ -279,6 +260,13 @@ public class Scraper
                 rawText = await page.InnerTextAsync("body");
                 cleanedText = CleanText(rawText);
                 diag.Add("no selectors matched usable content — fell back to full body text");
+            }
+
+            if (recentArticleTexts.Count > 0)
+            {
+                rawText = string.Join("\n\n", recentArticleTexts);
+                cleanedText = CleanText(rawText);
+                diag.Add($"combined {recentArticleTexts.Count} article(s) published within the last 10 days");
             }
 
             // Attribute the cause when extraction produced little/no usable text, so failures
@@ -752,6 +740,172 @@ public class Scraper
             }
         }
         catch { }
+    }
+
+    private static async Task<List<string>> ReadRecentLinkedArticlesAsync(IPage page, SiteConfig site, List<string> diagnostics)
+    {
+        var listedArticles = await page.EvaluateAsync<ListedArticle[]>("""
+            selector => Array.from(document.querySelectorAll(selector)).map(link => {
+                const card = link.closest('.chip, article, li, [class*="card" i], [class*="article" i]');
+                return {
+                    href: link.getAttribute('href') ?? '',
+                    dateText: [
+                        card?.getAttribute('data-date'),
+                        card?.querySelector('time')?.getAttribute('datetime'),
+                        card?.querySelector('time')?.textContent,
+                        card?.textContent
+                    ].filter(Boolean).join(' ')
+                };
+            })
+            """, site.FollowFirstLinkSelector!);
+        var articleUrls = new List<(string Url, DateTimeOffset? PublishedAt)>();
+        foreach (var article in listedArticles)
+        {
+            if (string.IsNullOrWhiteSpace(article.Href)) continue;
+
+            if (Uri.TryCreate(new Uri(page.Url), article.Href, out var resolved) &&
+                !articleUrls.Any(item => item.Url.Equals(resolved.ToString(), StringComparison.OrdinalIgnoreCase)))
+            {
+                var listedDate = TryParsePublishedDate(article.DateText);
+                articleUrls.Add((resolved.ToString(), listedDate));
+            }
+        }
+
+        diagnostics.Add($"article-list selector '{site.FollowFirstLinkSelector}': {articleUrls.Count} unique link(s) found");
+        var cutoff = DateTimeOffset.UtcNow.Date.AddDays(-10);
+        var articleTexts = new List<string>();
+        var sitemapDates = await LoadSitemapDatesAsync(articleUrls.Select(article => article.Url));
+
+        foreach (var article in articleUrls.Take(20))
+        {
+            try
+            {
+            await page.GotoAsync(article.Url, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
+                await page.WaitForTimeoutAsync(1000);
+
+                var publishedAt = article.PublishedAt
+                    ?? (sitemapDates.TryGetValue(article.Url, out var sitemapDate) ? (DateTimeOffset?)sitemapDate : null)
+                    ?? await GetPublishedDateAsync(page);
+                if (publishedAt is null)
+                {
+                    diagnostics.Add($"skipped article with no detectable publication date: {page.Url}");
+                    continue;
+                }
+
+                if (publishedAt.Value.Date < cutoff)
+                {
+                    diagnostics.Add($"skipped article published {publishedAt.Value:yyyy-MM-dd}: {page.Url}");
+                    continue;
+                }
+
+                await DismissOverlaysAsync(page);
+                var text = await ExtractPageTextAsync(page, site.Selectors);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    articleTexts.Add($"Άρθρο ({publishedAt.Value:dd/MM/yyyy}) — {page.Url}\n{text}");
+                    diagnostics.Add($"read article published {publishedAt.Value:yyyy-MM-dd}: {page.Url}");
+                }
+            }
+            catch (Exception ex)
+            {
+                diagnostics.Add($"skipped article after load/extraction failure ({ex.Message}): {article.Url}");
+            }
+        }
+
+        return articleTexts;
+    }
+
+    private sealed class ListedArticle
+    {
+        public string Href { get; set; } = "";
+        public string DateText { get; set; } = "";
+    }
+
+    private static async Task<Dictionary<string, DateTimeOffset>> LoadSitemapDatesAsync(IEnumerable<string> articleUrls)
+    {
+        var articleUrlSet = articleUrls.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (articleUrlSet.Count == 0) return [];
+
+        var sitemapUrl = new Uri(new Uri(articleUrlSet.First()), "/sitemap.xml");
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var sitemap = XDocument.Parse(await client.GetStringAsync(sitemapUrl));
+            XNamespace sitemapNamespace = "http://www.sitemaps.org/schemas/sitemap/0.9";
+            return sitemap.Descendants(sitemapNamespace + "url")
+                .Select(entry => new
+                {
+                    Url = entry.Element(sitemapNamespace + "loc")?.Value,
+                    Date = TryParsePublishedDate(entry.Element(sitemapNamespace + "lastmod")?.Value ?? ""),
+                })
+                .Where(entry => entry.Url is not null && entry.Date is not null && articleUrlSet.Contains(entry.Url))
+                .ToDictionary(entry => entry.Url!, entry => entry.Date!.Value, StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static async Task<DateTimeOffset?> GetPublishedDateAsync(IPage page)
+    {
+        var dateCandidates = await page.EvaluateAsync<string[]>("""
+            () => {
+                const values = [];
+                document.querySelectorAll('meta[property="article:published_time"], meta[name="date"], meta[name="publish-date"], meta[itemprop="datePublished"], time[datetime]')
+                    .forEach(element => values.push(element.getAttribute('content') ?? element.getAttribute('datetime') ?? element.textContent ?? ''));
+
+                document.querySelectorAll('script[type="application/ld+json"]').forEach(script => {
+                    try {
+                        const collectDates = value => {
+                            if (Array.isArray(value)) return value.forEach(collectDates);
+                            if (value && typeof value === 'object') {
+                                if (typeof value.datePublished === 'string') values.push(value.datePublished);
+                                if (typeof value.dateCreated === 'string') values.push(value.dateCreated);
+                                if (value['@graph']) collectDates(value['@graph']);
+                            }
+                        };
+                        collectDates(JSON.parse(script.textContent ?? ''));
+                    } catch { }
+                });
+
+                document.querySelectorAll('[class*="date" i], [class*="publish" i], [data-testid*="date" i]')
+                    .forEach(element => values.push(element.textContent ?? ''));
+                return values.filter(Boolean);
+            }
+            """);
+
+        return dateCandidates.Select(TryParsePublishedDate).FirstOrDefault(date => date is not null);
+    }
+
+    private static DateTimeOffset? TryParsePublishedDate(string candidate) =>
+        DateTimeOffset.TryParse(candidate, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces, out var publishedAt)
+            ? publishedAt
+            : null;
+
+    private static async Task<string> ExtractPageTextAsync(IPage page, IReadOnlyList<string> selectors)
+    {
+        var parts = new List<string>();
+        foreach (var selector in selectors)
+        {
+            try
+            {
+                var elements = await page.QuerySelectorAllAsync(selector);
+                foreach (var element in elements.Take(50))
+                {
+                    var text = await element.InnerTextAsync();
+                    if (!string.IsNullOrWhiteSpace(text) && text.Trim().Length > 20)
+                        parts.Add(text.Trim());
+                }
+            }
+            catch
+            {
+                // A malformed optional selector should not discard other recent articles.
+            }
+        }
+
+        return CleanText(parts.Count > 0 ? string.Join("\n", parts) : await page.InnerTextAsync("body"));
     }
 
     private static string CleanText(string text)

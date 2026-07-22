@@ -1,0 +1,45 @@
+﻿@using System.Security.Claims
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] | Market Summarizer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+<div class="app-shell">
+    <aside class="sidebar">
+        <a class="brand" asp-controller="Dashboard" asp-action="Index"><span class="brand-word">Optima</span><span class="brand-sub">bank</span></a>
+        <p class="product-label">Market Summarizer</p>
+        <nav class="nav-list" aria-label="Main navigation">
+            <a asp-controller="Dashboard" asp-action="Index"><i data-lucide="layout-dashboard"></i>Overview</a>
+            <p class="nav-heading">Configuration</p>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="sources"><i data-lucide="radio-tower"></i>Sources</a>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="prompts"><i data-lucide="message-square-text"></i>Prompts</a>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="agents"><i data-lucide="bot"></i>Agents</a>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="schedules"><i data-lucide="calendar-clock"></i>Schedules</a>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="recipients"><i data-lucide="mail"></i>Recipients</a>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="flags"><i data-lucide="toggle-right"></i>Feature flags</a>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="templates"><i data-lucide="file-text"></i>Report templates</a>
+            <a asp-controller="Management" asp-action="Index" asp-route-section="settings"><i data-lucide="settings-2"></i>Application settings</a>
+            <p class="nav-heading">Oversight</p>
+            <a asp-controller="Management" asp-action="Activity"><i data-lucide="history"></i>Change history</a>
+        </nav>
+        <div class="profile"><span class="avatar">@User.Identity?.Name?.FirstOrDefault()</span><div><strong>@User.Identity?.Name</strong><small>Administrator</small></div></div>
+        <form asp-controller="Account" asp-action="Logout" method="post"><button class="signout" type="submit"><i data-lucide="log-out"></i>Sign out</button></form>
+    </aside>
+    <main class="main-content">
+        <header class="topbar"><button class="mobile-menu" aria-label="Open navigation"><i data-lucide="menu"></i></button><div><span class="eyebrow">CONTROL CENTRE</span><h1>@ViewData["Title"]</h1></div><div class="topbar-status"><span class="pulse"></span>Configuration online</div></header>
+        <section class="page-content">
+            @if (TempData["Success"] is string success) { <div class="notification success"><i data-lucide="check-circle-2"></i>@success<button type="button" aria-label="Dismiss">&times;</button></div> }
+            @RenderBody()
+        </section>
+    </main>
+</div>
+<script>lucide.createIcons(); document.querySelectorAll('.notification button').forEach(button => button.onclick = () => button.parentElement.remove()); document.querySelectorAll('[data-confirm]').forEach(form => form.addEventListener('submit', event => { if (!confirm(form.dataset.confirm)) event.preventDefault(); }));</script>
+</body>
+</html>

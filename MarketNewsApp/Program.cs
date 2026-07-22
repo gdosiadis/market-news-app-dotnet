@@ -202,7 +202,7 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
 
         if (dryRun)
         {
-            var emailSender = new EmailSender(configuration.Email);
+            var emailSender = new EmailSender(configuration.Email, configuration.ReportTemplate);
             var html        = emailSender.RenderHtml(aiHtml, reportDateStr, sinceDateStr);
 
             // Local file preview can't resolve cid: references (that's an email-client
@@ -225,8 +225,8 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
         {
             try
             {
-                var emailSender = new EmailSender(configuration.Email);
-                emailSender.Send(aiHtml, perSource);
+                var emailSender = new EmailSender(configuration.Email, configuration.ReportTemplate);
+                emailSender.Send(aiHtml, perSource, configuration.EmailRecipients);
             }
             catch (Exception ex)
             {

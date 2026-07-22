@@ -66,3 +66,52 @@ public sealed class FeatureFlag
     public required string Key { get; set; }
     public bool IsEnabled { get; set; }
 }
+
+public sealed class AdminUser
+{
+    public int Id { get; set; }
+    public required string Username { get; set; }
+    public required string PasswordHash { get; set; }
+    public required string Role { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? LastLoginAt { get; set; }
+}
+
+public sealed class EmailRecipient
+{
+    public int Id { get; set; }
+    public required string Address { get; set; }
+    public string? DisplayName { get; set; }
+    public bool IsEnabled { get; set; } = true;
+}
+
+public sealed class ReportTemplateConfiguration
+{
+    public int Id { get; set; }
+    public required string Name { get; set; }
+    public required string SubjectTemplate { get; set; }
+    public required string BodyTemplate { get; set; }
+    public bool IsDefault { get; set; }
+    public bool IsEnabled { get; set; } = true;
+}
+
+public sealed class ApplicationSetting
+{
+    public int Id { get; set; }
+    public required string Key { get; set; }
+    public required string Value { get; set; }
+    public string? Description { get; set; }
+}
+
+public sealed class ConfigurationAuditEntry
+{
+    public long Id { get; set; }
+    public required string EntityType { get; set; }
+    public required string EntityId { get; set; }
+    public required string Action { get; set; }
+    public required string Actor { get; set; }
+    public string? BeforeJson { get; set; }
+    public string? AfterJson { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+}

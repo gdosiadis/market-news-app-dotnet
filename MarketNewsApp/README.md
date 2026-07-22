@@ -125,8 +125,35 @@ MarketNewsApp/
 `EmailSettings` (recipients/subject), `SchedulingSettings`, `AgentSettings`,
 `ReportSettings` και `FeatureFlags`. Η εφαρμογή περιλαμβάνει seed data που
 αντιστοιχεί στα προηγούμενα defaults του κώδικα. Ενημερώστε τις τιμές μέσω της
-διαχειριστικού εργαλείου SQLite, όχι με αλλαγή source. Το αρχείο πρέπει να
+διαχειριστικής εφαρμογής, όχι με αλλαγή source. Το αρχείο πρέπει να
 βρίσκεται σε persistent volume όταν η εφαρμογή τρέχει σε container.
+
+Η Admin UI και το console pipeline χρησιμοποιούν το ίδιο SQLite read model.
+Αλλαγές σε sources, prompts, agent, schedule, recipients, feature flags και
+το ενεργό default report template εφαρμόζονται στο επόμενο configuration
+refresh του pipeline. Η τιμή `configuration-cache-minutes` στα Application
+Settings ελέγχει αυτό το interval (0-60 λεπτά). Agent και schedule είναι
+singleton runtime records και ενημερώνονται μόνο, ώστε να υπάρχει πάντα μία
+ξεκάθαρη ενεργή ρύθμιση για το pipeline.
+
+## Admin UI
+
+Το ASP.NET Core MVC admin UI βρίσκεται στο `../MarketNewsAdmin` και χρησιμοποιεί
+το ίδιο `market-news.db` με την console εφαρμογή. Για τοπική εκτέλεση:
+
+```bash
+cd ../MarketNewsAdmin
+# Ορίστε ισχυρό password μόνο για το πρώτο login σε νέο database.
+export ADMIN_INITIAL_PASSWORD="replace-with-a-strong-password"
+dotnet run
+```
+
+Στα Windows PowerShell, χρησιμοποιήστε
+`$env:ADMIN_INITIAL_PASSWORD="replace-with-a-strong-password"`. Ο seeded χρήστης
+είναι `admin`. Μετά το πρώτο επιτυχές login το password αποθηκεύεται ως hash στη
+SQLite database και το environment variable δεν χρειάζεται για τις επόμενες
+συνδέσεις. Σε deployment, κάντε mount το SQLite file σε persistent volume και
+παρέχετε το initial password μέσω secret, ποτέ μέσα σε source ή image.
 
 ## Tech Stack
 
