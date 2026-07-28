@@ -50,6 +50,11 @@ public class ScrapedSite
     // without re-running with extra logging.
     public string Diagnostics { get; set; } = "";
 
+    // Best-effort detected article publish date (from meta tags/JSON-LD/visible date text).
+    // Null when no date could be detected on the page; Text still carries a human-readable
+    // "date unknown, retrieved on <today>" line in that case so the email always shows a date.
+    public DateTimeOffset? PublishedDate { get; set; }
+
     // Base64-encoded PNG screenshots of chart/table elements captured directly from the
     // live page (not AI-rendered) — these are embedded as-is in the email so charts/tables
     // are always an exact visual copy of what the source actually published.
@@ -79,5 +84,6 @@ public record SourceSummary(
     string Url,
     IReadOnlyList<string> Screenshots,
     string TranslatedContent,
-    string ScrapeDiagnostics);
+    string ScrapeDiagnostics,
+    DateTimeOffset? PublishedDate = null);
 

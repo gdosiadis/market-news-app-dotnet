@@ -262,11 +262,38 @@ public class Scraper
                 diag.Add("no selectors matched usable content — fell back to full body text");
             }
 
+            DateTimeOffset? publishedAt = null;
             if (recentArticleTexts.Count > 0)
             {
                 rawText = string.Join("\n\n", recentArticleTexts);
                 cleanedText = CleanText(rawText);
                 diag.Add($"combined {recentArticleTexts.Count} article(s) published within the last 10 days");
+            }
+            else
+            {
+                // Single-page sites (no article-list step above already stamps its own
+                // per-article date) — best-effort detect the article's publish date from
+                // meta tags / JSON-LD / visible date text so every scraped source carries
+                // a date the reader can trust, not just an implicit "scraped today".
+                try
+                {
+                    publishedAt = await GetPublishedDateAsync(page);
+                }
+                catch (Exception ex)
+                {
+                    diag.Add($"publish-date detection failed: {ex.Message}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(cleanedText))
+                {
+                    var dateLine = publishedAt is not null
+                        ? $"Ημερομηνία δημοσίευσης άρθρου: {publishedAt.Value:dd/MM/yyyy}"
+                        : $"Ημερομηνία δημοσίευσης άρθρου: άγνωστη (ανακτήθηκε {DateTimeOffset.UtcNow:dd/MM/yyyy})";
+                    cleanedText = $"{dateLine}\n\n{cleanedText}";
+                }
+                diag.Add(publishedAt is not null
+                    ? $"detected publish date: {publishedAt.Value:yyyy-MM-dd}"
+                    : "no publish date detected — falling back to scrape date in text");
             }
 
             // Attribute the cause when extraction produced little/no usable text, so failures
@@ -305,7 +332,8 @@ public class Scraper
                 Url = page.Url,
                 Text = string.IsNullOrWhiteSpace(cleanedText) ? $"[{site.Name}: no content extracted]" : cleanedText,
                 Diagnostics = string.Join(" | ", diag),
-                Screenshots = screenshots
+                Screenshots = screenshots,
+                PublishedDate = publishedAt
             });
         }
         catch (TimeoutException ex)
@@ -821,6 +849,48 @@ public class Scraper
         public string DateText { get; set; } = "";
     }
 
+    // Reliable, structured date sources — always trusted first regardless of value, since
+    // they're explicitly semantic (the page itself is declaring "this is when it was
+    // published").
+    private static async Task<string[]> GetStructuredDateCandidatesAsync(IPage page) =>
+        await page.EvaluateAsync<string[]>("""
+            () => {
+                const values = [];
+                document.querySelectorAll('meta[property="article:published_time"], meta[itemprop="datePublished"], time[datetime]')
+                    .forEach(element => values.push(element.getAttribute('content') ?? element.getAttribute('datetime') ?? element.textContent ?? ''));
+
+                document.querySelectorAll('script[type="application/ld+json"]').forEach(script => {
+                    try {
+                        const collectDates = value => {
+                            if (Array.isArray(value)) return value.forEach(collectDates);
+                            if (value && typeof value === 'object') {
+                                if (typeof value.datePublished === 'string') values.push(value.datePublished);
+                                if (value['@graph']) collectDates(value['@graph']);
+                            }
+                        };
+                        collectDates(JSON.parse(script.textContent ?? ''));
+                    } catch { }
+                });
+                return values.filter(Boolean);
+            }
+            """);
+
+    // Weaker, generic date sources (page-level meta like "date"/"publish-date", which some
+    // sites populate with an unrelated last-modified/copyright date instead of the article's
+    // actual publish date, plus loosely-classed on-page text). Only trusted when the parsed
+    // value actually looks like a plausible recent article date (see GetPublishedDateAsync).
+    private static async Task<string[]> GetLooseDateCandidatesAsync(IPage page) =>
+        await page.EvaluateAsync<string[]>("""
+            () => {
+                const values = [];
+                document.querySelectorAll('meta[name="date"], meta[name="publish-date"]')
+                    .forEach(element => values.push(element.getAttribute('content') ?? ''));
+                document.querySelectorAll('[class*="date" i], [class*="publish" i], [data-testid*="date" i]')
+                    .forEach(element => values.push(element.textContent ?? ''));
+                return values.filter(Boolean);
+            }
+            """);
+
     private static async Task<Dictionary<string, DateTimeOffset>> LoadSitemapDatesAsync(IEnumerable<string> articleUrls)
     {
         var articleUrlSet = articleUrls.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -847,35 +917,30 @@ public class Scraper
         }
     }
 
+    // Structured dates (JSON-LD/meta[article:published_time]/<time>) are normally trusted
+    // outright as an explicit publish-date declaration, but some sites' structured markup
+    // has turned out to be stale/unrelated to the actual displayed article (e.g. a leftover
+    // template date years in the past) rather than genuinely wrong-but-recent, so every
+    // candidate — structured or generic class-based text — is validated against a plausible
+    // recency window for a weekly/periodic market commentary before being accepted. If
+    // nothing in either tier falls in that window we report "unknown" rather than a
+    // confidently wrong stale date.
     private static async Task<DateTimeOffset?> GetPublishedDateAsync(IPage page)
     {
-        var dateCandidates = await page.EvaluateAsync<string[]>("""
-            () => {
-                const values = [];
-                document.querySelectorAll('meta[property="article:published_time"], meta[name="date"], meta[name="publish-date"], meta[itemprop="datePublished"], time[datetime]')
-                    .forEach(element => values.push(element.getAttribute('content') ?? element.getAttribute('datetime') ?? element.textContent ?? ''));
+        var recencyWindowStart = DateTimeOffset.UtcNow.AddDays(-45);
+        var recencyWindowEnd = DateTimeOffset.UtcNow.AddDays(2);
+        bool InWindow(DateTimeOffset date) => date >= recencyWindowStart && date <= recencyWindowEnd;
 
-                document.querySelectorAll('script[type="application/ld+json"]').forEach(script => {
-                    try {
-                        const collectDates = value => {
-                            if (Array.isArray(value)) return value.forEach(collectDates);
-                            if (value && typeof value === 'object') {
-                                if (typeof value.datePublished === 'string') values.push(value.datePublished);
-                                if (typeof value.dateCreated === 'string') values.push(value.dateCreated);
-                                if (value['@graph']) collectDates(value['@graph']);
-                            }
-                        };
-                        collectDates(JSON.parse(script.textContent ?? ''));
-                    } catch { }
-                });
+        var structured = await GetStructuredDateCandidatesAsync(page);
+        var structuredMatch = structured
+            .Select(TryParsePublishedDate)
+            .FirstOrDefault(date => date is not null && InWindow(date.Value));
+        if (structuredMatch is not null) return structuredMatch;
 
-                document.querySelectorAll('[class*="date" i], [class*="publish" i], [data-testid*="date" i]')
-                    .forEach(element => values.push(element.textContent ?? ''));
-                return values.filter(Boolean);
-            }
-            """);
-
-        return dateCandidates.Select(TryParsePublishedDate).FirstOrDefault(date => date is not null);
+        var loose = await GetLooseDateCandidatesAsync(page);
+        return loose
+            .Select(TryParsePublishedDate)
+            .FirstOrDefault(date => date is not null && InWindow(date.Value));
     }
 
     private static DateTimeOffset? TryParsePublishedDate(string candidate) =>

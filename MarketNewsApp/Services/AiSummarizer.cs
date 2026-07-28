@@ -42,7 +42,7 @@ public class AiSummarizer : IAsyncDisposable
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(180);
             var cleaned = string.Join("\n", lines);
-            result[name] = new ScrapedSite { Url = site.Url, Text = cleaned, Diagnostics = site.Diagnostics, Screenshots = site.Screenshots };
+            result[name] = new ScrapedSite { Url = site.Url, Text = cleaned, Diagnostics = site.Diagnostics, Screenshots = site.Screenshots, PublishedDate = site.PublishedDate };
             Console.WriteLine($"  🧹  {name}: {site.Text.Length:N0} → {cleaned.Length:N0} chars");
         }
         return result;
@@ -173,7 +173,8 @@ public class AiSummarizer : IAsyncDisposable
                 siteList[i].Value.Url,
                 siteList[i].Value.Screenshots,
                 translations[i] ?? "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.",
-                siteList[i].Value.Diagnostics);
+                siteList[i].Value.Diagnostics,
+                siteList[i].Value.PublishedDate);
 
         PrintStatusSummary(result);
         return result;
@@ -366,7 +367,7 @@ public class AiSummarizer : IAsyncDisposable
         foreach (var (name, summary) in perSource)
         {
             if (string.IsNullOrEmpty(summary.Html)) continue;
-            var section = RenderSourceSection(summary.Html, name, summary.Url);
+            var section = RenderSourceSection(summary.Html, name, summary.Url, summary.PublishedDate);
             parts.Add(_configuration.Report.IncludeTranslatedContent ? AddInlineTranslatedContent(section, summary.TranslatedContent, summary.ScrapeDiagnostics) : section);
             if (summary.Screenshots.Count > 0)
                 parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
@@ -375,12 +376,16 @@ public class AiSummarizer : IAsyncDisposable
         return string.Join("\n", parts);
     }
 
-    private static string RenderSourceSection(string html, string sourceName, string sourceUrl)
+    private static string RenderSourceSection(string html, string sourceName, string sourceUrl, DateTimeOffset? publishedDate)
     {
         var encodedName = System.Net.WebUtility.HtmlEncode(sourceName);
         var encodedUrl = System.Net.WebUtility.HtmlEncode(sourceUrl);
         var title = $"<h2 class=\"source-title\"><a href=\"{encodedUrl}\" target=\"_blank\">📄 {encodedName}</a></h2>";
-        var sourceTag = $"<p class=\"source-tag\">Πηγή: <a href=\"{encodedUrl}\" target=\"_blank\">{encodedUrl}</a></p>";
+        var dateText = publishedDate is not null
+            ? publishedDate.Value.ToString("dd/MM/yyyy")
+            : $"άγνωστη (ανακτήθηκε {DateTimeOffset.Now:dd/MM/yyyy})";
+        var sourceTag = $"<p class=\"source-tag\">Πηγή: <a href=\"{encodedUrl}\" target=\"_blank\">{encodedUrl}</a></p>" +
+            $"<p class=\"source-date\">🗓️ Ημερομηνία δημοσίευσης: {dateText}</p>";
 
         var headingPattern = new Regex(@"<h2(?:\s[^>]*)?>.*?</h2>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         var sourceTagPattern = new Regex(@"<p\s+class=\""source-tag\""[^>]*>.*?</p>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
