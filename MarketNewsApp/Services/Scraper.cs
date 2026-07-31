@@ -781,6 +781,7 @@ public class Scraper
                         card?.getAttribute('data-date'),
                         card?.querySelector('time')?.getAttribute('datetime'),
                         card?.querySelector('time')?.textContent,
+                        card?.querySelector('[class*="date" i]')?.textContent,
                         card?.textContent
                     ].filter(Boolean).join(' ')
                 };
@@ -943,11 +944,24 @@ public class Scraper
             .FirstOrDefault(date => date is not null && InWindow(date.Value));
     }
 
-    private static DateTimeOffset? TryParsePublishedDate(string candidate) =>
-        DateTimeOffset.TryParse(candidate, CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces, out var publishedAt)
-            ? publishedAt
+    // Formats seen on sites that print a plain-text date (no <time>/meta markup) using a
+    // dot separator (e.g. BNP Paribas' "27.07.2026" author byline) — DateTimeOffset.TryParse
+    // with invariant culture rejects these outright since '.' isn't a recognized date
+    // separator for it, so they need an explicit ParseExact fallback.
+    private static readonly string[] ExplicitDateFormats = ["dd.MM.yyyy", "d.M.yyyy", "dd-MM-yyyy", "d-M-yyyy"];
+
+    private static DateTimeOffset? TryParsePublishedDate(string candidate)
+    {
+        if (DateTimeOffset.TryParse(candidate, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces, out var publishedAt))
+            return publishedAt;
+
+        var trimmed = candidate.Trim().TrimStart('|').Trim();
+        return DateTimeOffset.TryParseExact(trimmed, ExplicitDateFormats, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces, out var exact)
+            ? exact
             : null;
+    }
 
     private static async Task<string> ExtractPageTextAsync(IPage page, IReadOnlyList<string> selectors)
     {
