@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: market-news
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-news-data
+  namespace: market-news
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: market-news-secrets
+  namespace: market-news
+type: Opaque
+stringData:
+  GMAIL_USER: ""
+  GMAIL_APP_PASSWORD: ""
+  OPENAI_API_KEY: ""
+  OPENAI_ENDPOINT: ""
+  OPENAI_MODEL: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-news-admin
+  namespace: market-news
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: market-news-admin
+  template:
+    metadata:
+      labels:
+        app: market-news-admin
+    spec:
+      containers:
+        - name: admin
+          image: registry.example.com/market-news-admin:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SQLITE_CONNECTION_STRING
+              value: Data Source=/data/market-news.db
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /account/login
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: market-news-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-news-admin
+  namespace: market-news
+spec:
+  selector:
+    app: market-news-admin
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market-news-pipeline
+  namespace: market-news
+spec:
+  schedule: "0 7 * * 1-5"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pipeline
+              image: registry.example.com/market-news-pipeline:latest
+              imagePullPolicy: IfNotPresent
+              args: ["--now"]
+              env:
+                - name: SQLITE_CONNECTION_STRING
+                  value: Data Source=/data/market-news.db
+                - name: AI_PROVIDER
+                  value: openai
+                - name: GMAIL_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: market-news-secrets
+                      key: GMAIL_USER
+                - name: GMAIL_APP_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: market-news-secrets
+                      key: GMAIL_APP_PASSWORD
+                - name: OPENAI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: market-news-secrets
+                      key: OPENAI_API_KEY
+                - name: OPENAI_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: market-news-secrets
+                      key: OPENAI_ENDPOINT
+                - name: OPENAI_MODEL
+                  valueFrom:
+                    secretKeyRef:
+                      name: market-news-secrets
+                      key: OPENAI_MODEL
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: market-news-data

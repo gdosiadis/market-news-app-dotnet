@@ -20,7 +20,7 @@ public static class ChatAgentFactory
         var provider = settings.Provider;
 
         // Azure OpenAI (explicit or fully-configured fallback)
-        if (provider != "copilot" && provider != "groq" &&
+        if (provider != "copilot" && provider != "groq" && provider != "openai" &&
             !string.IsNullOrWhiteSpace(settings.AzureEndpoint) &&
             !string.IsNullOrWhiteSpace(settings.AzureApiKey) &&
             !string.IsNullOrWhiteSpace(settings.AzureDeployment))
@@ -34,6 +34,12 @@ public static class ChatAgentFactory
         if (provider == "groq" && !string.IsNullOrWhiteSpace(settings.GroqApiKey))
         {
             return new GroqChatAgent(settings.GroqApiKey);
+        }
+
+        // OpenAI (explicit via AI_PROVIDER=openai)
+        if (provider == "openai" && !string.IsNullOrWhiteSpace(settings.OpenAiApiKey))
+        {
+            return new OpenAiChatAgent(settings.OpenAiApiKey, settings.OpenAiModel, settings.OpenAiEndpoint);
         }
 
         // GitHub Copilot SDK (default) — uses the logged-in Copilot user,

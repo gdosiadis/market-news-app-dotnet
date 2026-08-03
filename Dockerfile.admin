@@ -1,0 +1,15 @@
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY MarketNewsApp/MarketNewsApp.csproj MarketNewsApp/
+COPY MarketNewsAdmin/MarketNewsAdmin.csproj MarketNewsAdmin/
+RUN dotnet restore MarketNewsAdmin/MarketNewsAdmin.csproj
+COPY MarketNewsApp/ MarketNewsApp/
+COPY MarketNewsAdmin/ MarketNewsAdmin/
+RUN dotnet publish MarketNewsAdmin/MarketNewsAdmin.csproj --configuration Release --output /out --no-restore
+
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /out/ .
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "MarketNewsAdmin.dll"]

@@ -1,0 +1,9 @@
+.git
+.vs
+**/bin
+**/obj
+MarketNewsApp/.env
+MarketNewsApp/*.db
+MarketNewsApp/cache
+MarketNewsApp/logs
+MarketNewsApp/report.html

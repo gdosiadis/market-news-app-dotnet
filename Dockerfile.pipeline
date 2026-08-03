@@ -1,0 +1,11 @@
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY MarketNewsApp/MarketNewsApp.csproj MarketNewsApp/
+RUN dotnet restore MarketNewsApp/MarketNewsApp.csproj
+COPY MarketNewsApp/ MarketNewsApp/
+RUN dotnet publish MarketNewsApp/MarketNewsApp.csproj --configuration Release --output /out --no-restore
+
+FROM mcr.microsoft.com/playwright/dotnet:v1.44.0-jammy
+WORKDIR /app
+COPY --from=build /out/ .
+ENTRYPOINT ["dotnet", "MarketNewsApp.dll"]
