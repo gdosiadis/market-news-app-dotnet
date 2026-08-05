@@ -501,6 +501,11 @@ namespace MarketNewsApp.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("SourceRegion")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("SortOrder")
                         .HasColumnType("INTEGER");
 
@@ -532,6 +537,7 @@ namespace MarketNewsApp.Data.Migrations
                             IsEnabled = true,
                             Name = "Bloomberg Markets",
                             SelectorsJson = "[\"article\",\"[data-component='headline']\",\"h1\",\"h2\",\"h3\",\".story-package-module__headline\"]",
+                            SourceRegion = "International",
                             SortOrder = 1,
                             TimeoutMs = 20000,
                             Url = "https://www.bloomberg.com/markets",
@@ -544,6 +550,7 @@ namespace MarketNewsApp.Data.Migrations
                             IsEnabled = true,
                             Name = "BlackRock Investment Institute",
                             SelectorsJson = "[\"article\",\".content-block\",\"h1\",\"h2\",\"p\",\".editorial-content\"]",
+                            SourceRegion = "International",
                             SortOrder = 2,
                             TimeoutMs = 25000,
                             Url = "https://www.blackrock.com/corporate/insights/blackrock-investment-institute/publications/weekly-commentary",
@@ -556,6 +563,7 @@ namespace MarketNewsApp.Data.Migrations
                             IsEnabled = true,
                             Name = "T. Rowe Price Global Markets",
                             SelectorsJson = "[\"article\",\"main\",\".article-body\",\"h1\",\"h2\",\"h3\",\"p\"]",
+                            SourceRegion = "International",
                             SortOrder = 3,
                             TimeoutMs = 25000,
                             Url = "https://www.troweprice.com/personal-investing/resources/insights/global-markets-weekly-update.html",
@@ -568,6 +576,7 @@ namespace MarketNewsApp.Data.Migrations
                             IsEnabled = true,
                             Name = "BNP Paribas AM Viewpoint",
                             SelectorsJson = "[\"article\",\"main\",\"p\",\".article-title\",\"h1\",\"h2\",\"h3\",\".card-title\"]",
+                            SourceRegion = "International",
                             SortOrder = 4,
                             TimeoutMs = 20000,
                             Url = "https://viewpoint.bnpparibas-am.com/",
@@ -580,6 +589,7 @@ namespace MarketNewsApp.Data.Migrations
                             IsEnabled = true,
                             Name = "Edward Jones Weekly Update",
                             SelectorsJson = "[\"article\",\"main\",\".article-body\",\"h1\",\"h2\",\"h3\",\"p\"]",
+                            SourceRegion = "International",
                             SortOrder = 5,
                             TimeoutMs = 25000,
                             Url = "https://www.edwardjones.com/us-en/market-news-insights/stock-market-news/stock-market-weekly-update",
@@ -594,6 +604,7 @@ namespace MarketNewsApp.Data.Migrations
                             IsEnabled = true,
                             Name = "JPMorgan Weekly Market Recap",
                             SelectorsJson = "[\"article\",\"main\",\".content\",\"h1\",\"h2\",\"h3\",\"p\"]",
+                            SourceRegion = "International",
                             SortOrder = 6,
                             TimeoutMs = 25000,
                             Url = "https://am.jpmorgan.com/us/en/asset-management/institutional/insights/market-insights/market-updates/weekly-market-recap/",
@@ -607,6 +618,7 @@ namespace MarketNewsApp.Data.Migrations
                             IsEnabled = true,
                             Name = "Citi Market Insights",
                             SelectorsJson = "[\"article\",\"main\",\".content-area\",\"h1\",\"h2\",\"h3\",\"p\"]",
+                            SourceRegion = "International",
                             SortOrder = 7,
                             TimeoutMs = 25000,
                             Url = "https://marketinsights.citi.com/Market-Commentary/Weekly-Market-Update/index.html",

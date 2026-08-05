@@ -13,6 +13,7 @@ public sealed class ScrapeSourceConfiguration
     public string? ExcludeSelectorsJson { get; set; }
     public string? ScreenshotSelectorsJson { get; set; }
     public string? FollowFirstLinkSelector { get; set; }
+    public string SourceRegion { get; set; } = "International";
     public bool IsEnabled { get; set; }
     public int SortOrder { get; set; }
 }

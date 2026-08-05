@@ -26,6 +26,7 @@ public sealed class MarketNewsDbContext(DbContextOptions<MarketNewsDbContext> op
             entity.Property(source => source.Url).HasMaxLength(2048);
             entity.Property(source => source.WaitFor).HasMaxLength(500);
             entity.Property(source => source.FollowFirstLinkSelector).HasMaxLength(1000);
+            entity.Property(source => source.SourceRegion).HasMaxLength(30);
         });
         modelBuilder.Entity<PromptConfiguration>(entity =>
         {

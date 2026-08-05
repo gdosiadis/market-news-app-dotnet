@@ -42,7 +42,7 @@ public class AiSummarizer : IAsyncDisposable
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(180);
             var cleaned = string.Join("\n", lines);
-            result[name] = new ScrapedSite { Url = site.Url, Text = cleaned, Diagnostics = site.Diagnostics, Screenshots = site.Screenshots, PublishedDate = site.PublishedDate };
+            result[name] = new ScrapedSite { Url = site.Url, SourceRegion = site.SourceRegion, Text = cleaned, Diagnostics = site.Diagnostics, Screenshots = site.Screenshots, PublishedDate = site.PublishedDate };
             Console.WriteLine($"  🧹  {name}: {site.Text.Length:N0} → {cleaned.Length:N0} chars");
         }
         return result;
@@ -171,6 +171,7 @@ public class AiSummarizer : IAsyncDisposable
                 sections[i] ?? "",
                 statuses[i],
                 siteList[i].Value.Url,
+                siteList[i].Value.SourceRegion,
                 siteList[i].Value.Screenshots,
                 translations[i] ?? "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.",
                 siteList[i].Value.Diagnostics,
@@ -340,15 +341,15 @@ public class AiSummarizer : IAsyncDisposable
         var sinceDate = DateTime.Now.AddDays(-_configuration.Report.LookbackDays).ToString("dd/MM/yyyy");
 
         var statusRows = string.Join("\n", perSource.Select(kv =>
-            $"<tr><td>{kv.Key}</td><td>{StatusBadge(kv.Value.Status)}</td></tr>"));
+            $"<tr><td>{kv.Key}</td><td>{MarketLabel(kv.Value.SourceRegion)}</td><td>{StatusBadge(kv.Value.Status)}</td></tr>"));
 
         var intro = $"""
             <div class="section">
             <h2>🗓️ Επισκόπηση Περιόδου {sinceDate} – {today}</h2>
-            <p>Αναλυτική ενημέρωση αγορών <strong>ανά πηγή</strong> με <strong>συνθετική επισκόπηση</strong>.</p>
+            <p>Αναλυτική ενημέρωση για <strong>διεθνείς αγορές</strong> και <strong>Ελλάδα</strong>, ανά πηγή και με συνθετική επισκόπηση.</p>
             <h3>📋 Κατάσταση ανά πηγή</h3>
             <table class="market-table status-table">
-            <tr><th>Πηγή</th><th>Status</th></tr>
+            <tr><th>Πηγή</th><th>Αγορά</th><th>Status</th></tr>
             {statusRows}
             </table>
             </div>
@@ -364,17 +365,30 @@ public class AiSummarizer : IAsyncDisposable
             """;
 
         var parts = new List<string> { intro, synthesis };
-        foreach (var (name, summary) in perSource)
+        foreach (var group in perSource.GroupBy(item => IsGreekSource(item.Value.SourceRegion)))
         {
-            if (string.IsNullOrEmpty(summary.Html)) continue;
-            var section = RenderSourceSection(summary.Html, name, summary.Url, summary.PublishedDate);
-            parts.Add(_configuration.Report.IncludeTranslatedContent ? AddInlineTranslatedContent(section, summary.TranslatedContent, summary.ScrapeDiagnostics) : section);
-            if (summary.Screenshots.Count > 0)
-                parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
+            var heading = group.Key
+                ? "<div class=\"market-region-heading greek\"><h2>🇬🇷 Ελλάδα</h2><p>Νέα και αναλύσεις από την ελληνική αγορά.</p></div>"
+                : "<div class=\"market-region-heading global\"><h2>🌐 Διεθνείς Αγορές</h2><p>Νέα και αναλύσεις από τις διεθνείς αγορές.</p></div>";
+            parts.Add(heading);
+
+            foreach (var (name, summary) in group)
+            {
+                if (string.IsNullOrEmpty(summary.Html)) continue;
+                var section = RenderSourceSection(summary.Html, name, summary.Url, summary.PublishedDate);
+                parts.Add(_configuration.Report.IncludeTranslatedContent ? AddInlineTranslatedContent(section, summary.TranslatedContent, summary.ScrapeDiagnostics) : section);
+                if (summary.Screenshots.Count > 0)
+                    parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
+            }
         }
         if (_configuration.Report.IncludeSourceList) parts.Add(footer);
         return string.Join("\n", parts);
     }
+
+    private static bool IsGreekSource(string sourceRegion) =>
+        string.Equals(sourceRegion, "Greek", StringComparison.OrdinalIgnoreCase);
+
+    private static string MarketLabel(string sourceRegion) => IsGreekSource(sourceRegion) ? "Ελλάδα" : "Διεθνείς";
 
     private static string RenderSourceSection(string html, string sourceName, string sourceUrl, DateTimeOffset? publishedDate)
     {
@@ -400,7 +414,7 @@ public class AiSummarizer : IAsyncDisposable
         var content = System.Net.WebUtility.HtmlEncode(translatedContent);
         var interactions = FormatPageInteractions(diagnostics);
         var replacement = $"""
-            <p class="source-tag">Πηγή:</p>
+            $0
             <details class="translated-content" style="margin:0 0 14px;padding:8px 10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;">
             <summary style="color:#3fb950;cursor:pointer;">Προβολή πλήρους μεταφρασμένου περιεχομένου</summary>
             <p style="margin:10px 0 6px;color:#d29922;font-size:13px;"><strong>Ενέργειες στη σελίδα</strong></p>

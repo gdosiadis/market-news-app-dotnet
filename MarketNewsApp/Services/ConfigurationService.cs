@@ -77,6 +77,7 @@ public sealed class ConfigurationService(IDbContextFactory<MarketNewsDbContext> 
     {
         Name = source.Name,
         Url = source.Url,
+        SourceRegion = source.SourceRegion,
         Selectors = Deserialize(source.SelectorsJson),
         WaitFor = source.WaitFor,
         Timeout = source.TimeoutMs,

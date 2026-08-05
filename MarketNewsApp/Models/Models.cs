@@ -4,6 +4,7 @@ public class SiteConfig
 {
     public required string Name { get; set; }
     public required string Url { get; set; }
+    public string SourceRegion { get; set; } = "International";
     public required string[] Selectors { get; set; }
     public required string WaitFor { get; set; }
     public int Timeout { get; set; } = 20000;
@@ -30,18 +31,16 @@ public class SiteConfig
     // pick up the wrong elements (e.g. too many decorative icons matching "svg").
     public string[] ScreenshotSelectors { get; set; } = [];
 
-    // CSS selector for a link to follow immediately after the initial page load — used for
-    // sites whose configured Url is an article-list/landing page (e.g. Citi's weekly-update
-    // index) rather than the actual article, so the real analysis text and chart figures
-    // live on a separate, dynamically-named page reachable only via a link on the landing
-    // page. When set, the scraper clicks the first matching link and re-runs the rest of
-    // the extraction (overlay dismissal, screenshots, text selectors) against that page.
+    // CSS selector for article links on a configured listing page. The scraper clicks each
+    // matching article once, scrapes only that article page, then returns to the listing;
+    // it never follows links from the article page.
     public string? FollowFirstLinkSelector { get; set; }
 }
 
 public class ScrapedSite
 {
     public required string Url { get; set; }
+    public string SourceRegion { get; set; } = "International";
     public required string Text { get; set; }
 
     // Human-readable explanation of what happened during scraping (HTTP status,
@@ -82,6 +81,7 @@ public record SourceSummary(
     string Html,
     SourceStatus Status,
     string Url,
+    string SourceRegion,
     IReadOnlyList<string> Screenshots,
     string TranslatedContent,
     string ScrapeDiagnostics,

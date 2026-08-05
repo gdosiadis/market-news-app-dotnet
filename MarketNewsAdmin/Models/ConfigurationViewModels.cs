@@ -23,6 +23,7 @@ public sealed class ConfigurationFormViewModel
     public string? Tertiary { get; set; }
     public string? Detail { get; set; }
     public int Number { get; set; }
+    public string SourceRegion { get; set; } = "International";
     public bool IsEnabled { get; set; } = true;
 }
 

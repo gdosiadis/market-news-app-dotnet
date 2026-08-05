@@ -329,7 +329,8 @@ public class Scraper
 
             return (site.Name, new ScrapedSite
             {
-                Url = page.Url,
+                Url = site.Url,
+                SourceRegion = site.SourceRegion,
                 Text = string.IsNullOrWhiteSpace(cleanedText) ? $"[{site.Name}: no content extracted]" : cleanedText,
                 Diagnostics = string.Join(" | ", diag),
                 Screenshots = screenshots,
@@ -339,12 +340,12 @@ public class Scraper
         catch (TimeoutException ex)
         {
             diag.Add($"❌ CAUSE: page load timed out after {site.Timeout}ms ({ex.Message})");
-            return (site.Name, new ScrapedSite { Url = site.Url, Text = $"[{site.Name}: page load timed out]", Diagnostics = string.Join(" | ", diag) });
+            return (site.Name, new ScrapedSite { Url = site.Url, SourceRegion = site.SourceRegion, Text = $"[{site.Name}: page load timed out]", Diagnostics = string.Join(" | ", diag) });
         }
         catch (Exception ex)
         {
             diag.Add($"❌ CAUSE: unhandled exception — {ex.GetType().Name}: {ex.Message}");
-            return (site.Name, new ScrapedSite { Url = site.Url, Text = $"[{site.Name}: error — {ex.Message}]", Diagnostics = string.Join(" | ", diag) });
+            return (site.Name, new ScrapedSite { Url = site.Url, SourceRegion = site.SourceRegion, Text = $"[{site.Name}: error — {ex.Message}]", Diagnostics = string.Join(" | ", diag) });
         }
         finally
         {
@@ -773,9 +774,10 @@ public class Scraper
     private static async Task<List<string>> ReadRecentLinkedArticlesAsync(IPage page, SiteConfig site, List<string> diagnostics)
     {
         var listedArticles = await page.EvaluateAsync<ListedArticle[]>("""
-            selector => Array.from(document.querySelectorAll(selector)).map(link => {
+            selector => Array.from(document.querySelectorAll(selector)).map((link, index) => {
                 const card = link.closest('.chip, article, li, [class*="card" i], [class*="article" i]');
                 return {
+                    linkIndex: index,
                     href: link.getAttribute('href') ?? '',
                     dateText: [
                         card?.getAttribute('data-date'),
@@ -787,7 +789,7 @@ public class Scraper
                 };
             })
             """, site.FollowFirstLinkSelector!);
-        var articleUrls = new List<(string Url, DateTimeOffset? PublishedAt)>();
+        var articleUrls = new List<(string Url, DateTimeOffset? PublishedAt, int LinkIndex)>();
         foreach (var article in listedArticles)
         {
             if (string.IsNullOrWhiteSpace(article.Href)) continue;
@@ -796,7 +798,7 @@ public class Scraper
                 !articleUrls.Any(item => item.Url.Equals(resolved.ToString(), StringComparison.OrdinalIgnoreCase)))
             {
                 var listedDate = TryParsePublishedDate(article.DateText);
-                articleUrls.Add((resolved.ToString(), listedDate));
+                articleUrls.Add((resolved.ToString(), listedDate, article.LinkIndex));
             }
         }
 
@@ -807,14 +809,28 @@ public class Scraper
 
         foreach (var article in articleUrls.Take(20))
         {
+            var returnedToList = false;
+            var canContinue = true;
             try
             {
-            await page.GotoAsync(article.Url, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
-                await page.WaitForTimeoutAsync(1000);
-
                 var publishedAt = article.PublishedAt
-                    ?? (sitemapDates.TryGetValue(article.Url, out var sitemapDate) ? (DateTimeOffset?)sitemapDate : null)
-                    ?? await GetPublishedDateAsync(page);
+                    ?? (sitemapDates.TryGetValue(article.Url, out var sitemapDate) ? (DateTimeOffset?)sitemapDate : null);
+                if (publishedAt is not null && publishedAt.Value.Date < cutoff)
+                {
+                    diagnostics.Add($"skipped article published {publishedAt.Value:yyyy-MM-dd}: {article.Url}");
+                    continue;
+                }
+
+                // Each article is opened from the configured listing page and then returned
+                // to it, preserving the site's own navigation flow and lazy-loaded cards.
+                var link = page.Locator(site.FollowFirstLinkSelector!).Nth(article.LinkIndex);
+                await link.ScrollIntoViewIfNeededAsync();
+                await link.ClickAsync(new() { Timeout = site.Timeout });
+                await page.WaitForTimeoutAsync(1000);
+                returnedToList = true;
+                diagnostics.Add($"clicked article link: {article.Url}");
+
+                publishedAt ??= await GetPublishedDateAsync(page);
                 if (publishedAt is null)
                 {
                     diagnostics.Add($"skipped article with no detectable publication date: {page.Url}");
@@ -828,7 +844,26 @@ public class Scraper
                 }
 
                 await DismissOverlaysAsync(page);
+                if (site.ExcludeSelectors.Length > 0)
+                {
+                    await page.EvaluateAsync<int>(
+                        @"sels => {
+                            let n = 0;
+                            for (const s of sels) {
+                                document.querySelectorAll(s).forEach(e => { e.remove(); n++; });
+                            }
+                            return n;
+                        }",
+                        site.ExcludeSelectors);
+                }
                 var text = await ExtractPageTextAsync(page, site.Selectors);
+                var title = await ExtractArticleTitleAsync(page);
+                if (IsGreekSource(site) && !IsGreekMarketArticle(title))
+                {
+                    diagnostics.Add($"skipped non-Greek-market article: {page.Url}");
+                    continue;
+                }
+
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     articleTexts.Add($"Άρθρο ({publishedAt.Value:dd/MM/yyyy}) — {page.Url}\n{text}");
@@ -839,13 +874,77 @@ public class Scraper
             {
                 diagnostics.Add($"skipped article after load/extraction failure ({ex.Message}): {article.Url}");
             }
+            finally
+            {
+                if (returnedToList)
+                {
+                    try
+                    {
+                        await page.GoBackAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
+                        await page.WaitForTimeoutAsync(500);
+                        diagnostics.Add("returned to article list");
+                    }
+                    catch (Exception ex)
+                    {
+                        diagnostics.Add($"could not return to article list ({ex.Message}); stopped source to preserve single-hop traversal");
+                        canContinue = false;
+                    }
+                }
+            }
+
+            if (!canContinue)
+                break;
         }
 
         return articleTexts;
     }
 
+    private static bool IsGreekSource(SiteConfig site) =>
+        string.Equals(site.SourceRegion, "Greek", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<string> ExtractArticleTitleAsync(IPage page)
+    {
+        try
+        {
+            return (await page.Locator("h1").First.InnerTextAsync()).Trim();
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static bool IsGreekMarketArticle(string title)
+    {
+        var normalizedTitle = title.ToUpperInvariant();
+        if (InternationalMarketTitleSignals.Any(signal => normalizedTitle.Contains(signal, StringComparison.Ordinal)))
+            return false;
+
+        return GreekMarketSignals.Any(signal => normalizedTitle.Contains(signal, StringComparison.Ordinal));
+    }
+
+    // Greek publishers frequently place foreign-market stories beside domestic ones in
+    // the same "markets" feed. Require an explicit domestic-market signal before a Greek
+    // source article reaches the AI/report, so a Greek-language Wall Street or Asia story
+    // cannot be presented as news from the Greek market.
+    private static readonly string[] GreekMarketSignals =
+    [
+        "ΧΡΗΜΑΤΙΣΤΗΡΙ", "ATHEX", "ΧΡΗΜΑΤΙΣΤΗΡΙΟ ΑΘΗΝΩΝ", "ΓΕΝΙΚΟΣ ΔΕΙΚΤΗΣ",
+        "FTSE/ATHEX", "ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ", "ΕΛΛΗΝΙΚΕΣ ΤΡΑΠΕΖΕΣ",
+        "ALPHA BANK", "EUROBANK", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ", "ΤΡΑΠΕΖΑ ΠΕΙΡΑΙΩΣ",
+        "ΔΕΗ", "ΟΤΕ", "ΟΠΑΠ", "ΜΥΤΙΛΗΝΑΙ", "METLEN", "ΓΕΚ ΤΕΡΝΑ",
+    ];
+
+    private static readonly string[] InternationalMarketTitleSignals =
+    [
+        "WALL STREET", "ΝΤΑΟΥ ΤΖΟΟΥΝΣ", "NASDAQ", "S&P 500", "ΑΣΙΑ",
+        "ΚΙΝΑ", "ΙΑΠΩΝ", "ΕΥΡΩΑΓΟΡ", "ΕΥΡΩΠΑΪΚΕΣ ΑΓΟΡΕΣ", "ΠΕΤΡΕΛΑΙ",
+        "ΧΡΥΣ", "BITCOIN", "ΚΡΥΠΤΟ", "ΣΙΔΗΡΟΜΕΤΑΛΛΕΥΜΑ", "KOSPI",
+    ];
+
     private sealed class ListedArticle
     {
+        public int LinkIndex { get; set; }
         public string Href { get; set; } = "";
         public string DateText { get; set; } = "";
     }

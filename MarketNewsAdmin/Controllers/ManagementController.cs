@@ -12,9 +12,10 @@ namespace MarketNewsAdmin.Controllers;
 public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> contextFactory, AdminConfigurationService auditService) : Controller
 {
     private static readonly ISet<string> SingletonSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "agents", "schedules" };
+    private static readonly ISet<string> SourceSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "sources", "greek-sources" };
     private static readonly IReadOnlyDictionary<string, string> Titles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
-        ["sources"] = "Sources", ["prompts"] = "Prompts", ["agents"] = "Agents", ["schedules"] = "Schedules",
+        ["sources"] = "International Sources", ["greek-sources"] = "Greek Sources", ["prompts"] = "Prompts", ["agents"] = "Agents", ["schedules"] = "Schedules",
         ["recipients"] = "Email Recipients", ["flags"] = "Feature Flags", ["templates"] = "Report Templates", ["settings"] = "Application Settings",
     };
 
@@ -77,7 +78,8 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
 
     private static async Task<IReadOnlyList<ManagementRow>> RowsAsync(MarketNewsDbContext db, string section, string? search) => section switch
     {
-        "sources" => await db.ScrapeSources.AsNoTracking().Where(item => search == null || item.Name.Contains(search) || item.Url.Contains(search)).OrderBy(item => item.SortOrder).Select(item => new ManagementRow(item.Id, item.Name, item.Url, item.IsEnabled)).ToListAsync(),
+        "sources" => await SourceRowsAsync(db, "International", search),
+        "greek-sources" => await SourceRowsAsync(db, "Greek", search),
         "prompts" => await db.Prompts.AsNoTracking().Where(item => search == null || item.Key.Contains(search)).OrderBy(item => item.Key).Select(item => new ManagementRow(item.Id, item.Key, item.Template, item.IsEnabled)).ToListAsync(),
         "agents" => await db.AgentSettings.AsNoTracking().Select(item => new ManagementRow(item.Id, item.Provider, item.CopilotModel ?? "Default model", null)).ToListAsync(),
         "schedules" => await db.SchedulingSettings.AsNoTracking().Select(item => new ManagementRow(item.Id, item.DailySendTime, "Daily report schedule", item.IsEnabled)).ToListAsync(),
@@ -88,10 +90,13 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
         _ => [],
     };
 
-    private static ConfigurationFormViewModel NewForm(string section) => new() { Section = section, Primary = "", Secondary = "", IsEnabled = true, Number = section == "sources" ? 20000 : 0 };
+    private static Task<List<ManagementRow>> SourceRowsAsync(MarketNewsDbContext db, string sourceRegion, string? search) =>
+        db.ScrapeSources.AsNoTracking().Where(item => item.SourceRegion == sourceRegion && (search == null || item.Name.Contains(search) || item.Url.Contains(search))).OrderBy(item => item.SortOrder).Select(item => new ManagementRow(item.Id, item.Name, item.Url, item.IsEnabled)).ToListAsync();
+
+    private static ConfigurationFormViewModel NewForm(string section) => new() { Section = section, Primary = "", Secondary = "", IsEnabled = true, Number = SourceSections.Contains(section) ? 20000 : 0, SourceRegion = SourceRegionFor(section) };
     private static async Task<ConfigurationFormViewModel?> ExistingFormAsync(MarketNewsDbContext db, string section, int id) => section switch
     {
-        "sources" => await db.ScrapeSources.FindAsync(id) is { } item ? new() { Section = section, Id = item.Id, Primary = item.Name, Secondary = item.Url, Tertiary = item.SelectorsJson, Detail = item.WaitFor, Number = item.TimeoutMs, IsEnabled = item.IsEnabled } : null,
+        "sources" or "greek-sources" => await db.ScrapeSources.FindAsync(id) is { } item && item.SourceRegion == SourceRegionFor(section) ? new() { Section = section, Id = item.Id, Primary = item.Name, Secondary = item.Url, Tertiary = item.SelectorsJson, Detail = item.WaitFor, Number = item.TimeoutMs, SourceRegion = item.SourceRegion, IsEnabled = item.IsEnabled } : null,
         "prompts" => await db.Prompts.FindAsync(id) is { } item ? new() { Section = section, Id = item.Id, Primary = item.Key, Secondary = item.Template, IsEnabled = item.IsEnabled } : null,
         "agents" => await db.AgentSettings.FindAsync(id) is { } item ? new() { Section = section, Id = item.Id, Primary = item.Provider, Secondary = item.CopilotModel ?? "", Tertiary = item.AzureEndpoint, Detail = item.AzureDeployment, IsEnabled = true } : null,
         "schedules" => await db.SchedulingSettings.FindAsync(id) is { } item ? new() { Section = section, Id = item.Id, Primary = item.DailySendTime, Secondary = "Daily schedule", IsEnabled = item.IsEnabled } : null,
@@ -104,12 +109,12 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
 
     private static async Task<object?> FindAsync(MarketNewsDbContext db, string section, int id) => section switch
     {
-        "sources" => await db.ScrapeSources.FindAsync(id), "prompts" => await db.Prompts.FindAsync(id), "agents" => await db.AgentSettings.FindAsync(id), "schedules" => await db.SchedulingSettings.FindAsync(id), "recipients" => await db.EmailRecipients.FindAsync(id), "flags" => await db.FeatureFlags.FindAsync(id), "templates" => await db.ReportTemplates.FindAsync(id), "settings" => await db.ApplicationSettings.FindAsync(id), _ => null,
+        "sources" or "greek-sources" => await db.ScrapeSources.FindAsync(id), "prompts" => await db.Prompts.FindAsync(id), "agents" => await db.AgentSettings.FindAsync(id), "schedules" => await db.SchedulingSettings.FindAsync(id), "recipients" => await db.EmailRecipients.FindAsync(id), "flags" => await db.FeatureFlags.FindAsync(id), "templates" => await db.ReportTemplates.FindAsync(id), "settings" => await db.ApplicationSettings.FindAsync(id), _ => null,
     };
 
     private static (string Key, string Message)? ValidateForm(ConfigurationFormViewModel model)
     {
-        if (model.Section == "sources" && !Uri.TryCreate(model.Secondary, UriKind.Absolute, out _)) return ("Secondary", "Enter a valid source URL.");
+        if (SourceSections.Contains(model.Section) && !Uri.TryCreate(model.Secondary, UriKind.Absolute, out _)) return ("Secondary", "Enter a valid source URL.");
         if (model.Section == "recipients" && !new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(model.Primary)) return ("Primary", "Enter a valid email address.");
         if (model.Section == "schedules" && !TimeOnly.TryParse(model.Primary, out _)) return ("Primary", "Use a 24-hour time, for example 07:00.");
         return null;
@@ -122,7 +127,7 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
         var before = existing is null ? null : JsonSerializer.Serialize(existing);
         object entity = form.Section switch
         {
-            "sources" => existing as ScrapeSourceConfiguration ?? new ScrapeSourceConfiguration { Name = form.Primary, Url = form.Secondary, SelectorsJson = form.Tertiary ?? "[]", WaitFor = form.Detail ?? "body" },
+            "sources" or "greek-sources" => existing as ScrapeSourceConfiguration ?? new ScrapeSourceConfiguration { Name = form.Primary, Url = form.Secondary, SelectorsJson = form.Tertiary ?? "[]", WaitFor = form.Detail ?? "body", SourceRegion = SourceRegionFor(form.Section) },
             "prompts" => existing as PromptConfiguration ?? new PromptConfiguration { Key = form.Primary, Template = form.Secondary },
             "agents" => existing as AgentConfiguration ?? new AgentConfiguration { Provider = form.Primary },
             "schedules" => existing as SchedulingConfiguration ?? new SchedulingConfiguration { DailySendTime = form.Primary },
@@ -134,7 +139,7 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
         };
         switch (entity)
         {
-            case ScrapeSourceConfiguration item: item.Name = form.Primary; item.Url = form.Secondary; item.SelectorsJson = form.Tertiary ?? "[]"; item.WaitFor = form.Detail ?? "body"; item.TimeoutMs = form.Number; item.IsEnabled = form.IsEnabled; item.SortOrder = item.SortOrder == 0 ? item.Id : item.SortOrder; break;
+            case ScrapeSourceConfiguration item: item.Name = form.Primary; item.Url = form.Secondary; item.SelectorsJson = form.Tertiary ?? "[]"; item.WaitFor = form.Detail ?? "body"; item.TimeoutMs = form.Number; item.SourceRegion = SourceRegionFor(form.Section); item.IsEnabled = form.IsEnabled; item.SortOrder = item.SortOrder == 0 ? item.Id : item.SortOrder; break;
             case PromptConfiguration item: item.Key = form.Primary; item.Template = form.Secondary; item.IsEnabled = form.IsEnabled; break;
             case AgentConfiguration item: item.Provider = form.Primary; item.CopilotModel = form.Secondary; item.AzureEndpoint = form.Tertiary; item.AzureDeployment = form.Detail; break;
             case SchedulingConfiguration item: item.DailySendTime = form.Primary; item.IsEnabled = form.IsEnabled; break;
@@ -146,4 +151,6 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
         if (existing is null) db.Add(entity);
         return (entity, action, before);
     }
+
+    private static string SourceRegionFor(string section) => section == "greek-sources" ? "Greek" : "International";
 }
