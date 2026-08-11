@@ -22,6 +22,7 @@ public static class AuditLogger
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "logs");
 
     private static string AuditLogFile => Path.Combine(LogsDir, "audit.jsonl");
+    private static string ScrapeFailuresLogFile => Path.Combine(LogsDir, "scrape-failures.log");
     private static string LastHashesFile => Path.Combine(LogsDir, "last-hashes.json");
     private static string RawArchiveDir(string date) => Path.Combine(LogsDir, "raw", date);
 
@@ -85,6 +86,20 @@ public static class AuditLogger
             {
                 foreach (var r in records)
                     writer.WriteLine(JsonSerializer.Serialize(r, JsonOpts));
+            }
+
+            var failedScrapes = records.Where(record => !record.ScrapeIsOk).ToList();
+            if (failedScrapes.Count > 0)
+            {
+                using var writer = new StreamWriter(ScrapeFailuresLogFile, append: true);
+                foreach (var failure in failedScrapes)
+                {
+                    writer.WriteLine($"[{failure.Timestamp}] {failure.Site}");
+                    writer.WriteLine($"URL: {failure.Url}");
+                    writer.WriteLine($"Reason: {failure.ScrapeDiagnostics}");
+                    writer.WriteLine();
+                }
+                Console.WriteLine($"  ⚠️  {failedScrapes.Count} scrape failure(s) logged → logs/scrape-failures.log");
             }
 
             SaveLastHashes(lastHashes);

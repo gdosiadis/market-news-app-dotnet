@@ -78,13 +78,21 @@ public sealed class CopilotChatAgent : IChatAgent
             {
                 return await ChatAttemptAsync(messages);
             }
-            catch (Exception ex) when (attempt < maxAttempts && TransientCopilotErrors.Any(e => ex.Message.ToLowerInvariant().Contains(e)))
+            catch (Exception ex) when (attempt < maxAttempts && IsTransientError(ex.Message))
             {
                 var delay = TimeSpan.FromMilliseconds(1500 * attempt);
                 Console.WriteLine($"     ⏳  Transient Copilot error (attempt {attempt}/{maxAttempts}), retrying in {delay.TotalSeconds:F1}s...");
                 await Task.Delay(delay);
             }
         }
+    }
+
+    private static bool IsTransientError(string message)
+    {
+        var normalizedMessage = message.ToLowerInvariant();
+        return !normalizedMessage.Contains("model ") &&
+               !normalizedMessage.Contains("is not available") &&
+               TransientCopilotErrors.Any(error => normalizedMessage.Contains(error));
     }
 
     private async Task<string> ChatAttemptAsync(List<ChatMessage> messages)

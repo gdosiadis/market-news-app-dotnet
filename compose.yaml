@@ -1,0 +1,39 @@
+services:
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+    image: market-news-admin:local
+    ports:
+      - "8081:8080"
+    environment:
+      SQLITE_CONNECTION_STRING: Data Source=/data/market-news.db
+    volumes:
+      - market-news-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /data/market-news.db"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: market-news-pipeline:local
+    profiles: ["pipeline"]
+    depends_on:
+      admin:
+        condition: service_healthy
+    env_file:
+      - path: ./MarketNewsApp/.env
+        required: false
+    environment:
+      SQLITE_CONNECTION_STRING: Data Source=/data/market-news.db
+    volumes:
+      - market-news-data:/data
+    command: ["--test"]
+
+volumes:
+  market-news-data:

@@ -5,7 +5,7 @@ COPY MarketNewsAdmin/MarketNewsAdmin.csproj MarketNewsAdmin/
 RUN dotnet restore MarketNewsAdmin/MarketNewsAdmin.csproj
 COPY MarketNewsApp/ MarketNewsApp/
 COPY MarketNewsAdmin/ MarketNewsAdmin/
-RUN dotnet publish MarketNewsAdmin/MarketNewsAdmin.csproj --configuration Release --output /out --no-restore
+RUN dotnet publish MarketNewsAdmin/MarketNewsAdmin.csproj --configuration Release --output /out --no-restore -p:CopilotSkipCliDownload=true
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app

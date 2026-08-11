@@ -82,6 +82,8 @@ td strong { color: var(--optima-plum); font-weight: 800; }
 .icon-button.danger { color: var(--optima-red); }
 .icon-button.danger:hover { color: #fff; background: var(--optima-red); border-color: var(--optima-red); }
 .inline-form { display: inline; }
+.source-selection { display: inline-flex; margin-right: 8px; vertical-align: middle; }
+.source-selection input { width: 16px; height: 16px; margin: 0; accent-color: var(--optima-orange); cursor: pointer; }
 .empty-cell { padding: 42px; color: var(--optima-muted); text-align: center; }
 
 .hero-strip { display: flex; gap: 24px; align-items: center; justify-content: space-between; margin-bottom: 24px; padding: clamp(24px, 4vw, 38px); color: #fff; background: var(--optima-plum); border-radius: 8px; }

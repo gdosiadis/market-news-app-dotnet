@@ -42,6 +42,11 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
     public async Task<IActionResult> Edit(ConfigurationFormViewModel model)
     {
         if (!Titles.ContainsKey(model.Section)) return NotFound();
+        if (model.Section == "agents" && string.IsNullOrWhiteSpace(model.Secondary))
+        {
+            ModelState.Remove(nameof(model.Secondary));
+            model.Secondary = "";
+        }
         var validationError = ValidateForm(model);
         if (validationError is not null)
             ModelState.AddModelError(validationError.Value.Key, validationError.Value.Message);
@@ -71,6 +76,24 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
         AdminConfigurationService.Audit(db, entity, "Deleted", User.Identity?.Name ?? "unknown", before);
         await db.SaveChangesAsync();
         TempData["Success"] = $"{Titles[section]} entry deleted.";
+        return RedirectToAction(nameof(Index), new { section });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> ToggleSource(string section, int id)
+    {
+        if (!SourceSections.Contains(section)) return NotFound();
+        await using var db = await contextFactory.CreateDbContextAsync();
+        var source = await db.ScrapeSources.FindAsync(id);
+        if (source is null || source.SourceRegion != SourceRegionFor(section)) return NotFound();
+
+        var before = JsonSerializer.Serialize(source);
+        source.IsEnabled = !source.IsEnabled;
+        await db.SaveChangesAsync();
+        AdminConfigurationService.Audit(db, source, "Updated", User.Identity?.Name ?? "unknown", before);
+        await db.SaveChangesAsync();
+        TempData["Success"] = $"{source.Name} is now {(source.IsEnabled ? "selected for scraping" : "excluded from scraping")}.";
         return RedirectToAction(nameof(Index), new { section });
     }
 
@@ -141,7 +164,7 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
         {
             case ScrapeSourceConfiguration item: item.Name = form.Primary; item.Url = form.Secondary; item.SelectorsJson = form.Tertiary ?? "[]"; item.WaitFor = form.Detail ?? "body"; item.TimeoutMs = form.Number; item.SourceRegion = SourceRegionFor(form.Section); item.IsEnabled = form.IsEnabled; item.SortOrder = item.SortOrder == 0 ? item.Id : item.SortOrder; break;
             case PromptConfiguration item: item.Key = form.Primary; item.Template = form.Secondary; item.IsEnabled = form.IsEnabled; break;
-            case AgentConfiguration item: item.Provider = form.Primary; item.CopilotModel = form.Secondary; item.AzureEndpoint = form.Tertiary; item.AzureDeployment = form.Detail; break;
+            case AgentConfiguration item: item.Provider = form.Primary; item.CopilotModel = string.IsNullOrWhiteSpace(form.Secondary) ? null : form.Secondary.Trim(); item.AzureEndpoint = form.Tertiary; item.AzureDeployment = form.Detail; break;
             case SchedulingConfiguration item: item.DailySendTime = form.Primary; item.IsEnabled = form.IsEnabled; break;
             case EmailRecipient item: item.Address = form.Primary; item.DisplayName = form.Secondary; item.IsEnabled = form.IsEnabled; break;
             case FeatureFlag item: item.Key = form.Primary; item.IsEnabled = form.IsEnabled; break;

@@ -6,7 +6,8 @@ namespace MarketNewsApp.Services;
 
 public class AiSummarizer : IAsyncDisposable
 {
-    private const string SummaryPromptVersion = "source-only-v2";
+    private const string SummaryPromptVersion = "source-only-v4-retry-ai-failures";
+    private const int OpenAiTranslationSourceCharacters = 6000;
 
     // Provider selection/implementation now lives under Agents/ (one file per
     // provider: CopilotChatAgent, GroqChatAgent, AzureOpenAiChatAgent) behind
@@ -77,7 +78,8 @@ public class AiSummarizer : IAsyncDisposable
 
             if (previousCache != null &&
                 previousCache.TryGetValue(name, out var cachedEntry) &&
-                cachedEntry.ContentHash == contentHash)
+                cachedEntry.ContentHash == contentHash &&
+                cachedEntry.Status is SourceStatus.Success or SourceStatus.Partial)
             {
                 statuses[idx] = cachedEntry.Status;
                 sections[idx] = cachedEntry.Html;
@@ -98,6 +100,7 @@ public class AiSummarizer : IAsyncDisposable
                     }
                 }
                 Console.WriteLine($"     ♻️  {name} — reused cached summary (unchanged content)");
+                PrintStatusReason(name, statuses[idx], info.Diagnostics, reusedFromCache: true);
                 return;
             }
 
@@ -114,27 +117,38 @@ public class AiSummarizer : IAsyncDisposable
                     </div>
                     """;
                 Console.WriteLine($"     {StatusIcon(SourceStatus.Blocked)}  {name} — Blocked (χωρίς περιεχόμενο)");
+                PrintStatusReason(name, statuses[idx], info.Diagnostics);
                 return;
             }
 
             // Some sources (e.g. JPMorgan) bury the real analysis well past the first
             // few thousand characters behind nav/chart-accessibility text; a small
             // truncation cut it off entirely before the model ever saw it.
-            var textContent = info.Text.Length > _configuration.Report.MaxSummarySourceCharacters ? info.Text[.._configuration.Report.MaxSummarySourceCharacters] : info.Text;
-            var userPrompt = FormatPrompt("source-user", ("today", today), ("sinceDate", sinceDate), ("sourceName", name), ("sourceUrl", info.Url), ("content", textContent));
+            var sourceContent = IsOpenAiProvider ? RemoveOpenAiBoilerplate(info.Text) : info.Text;
+            var textContent = sourceContent.Length > _configuration.Report.MaxSummarySourceCharacters ? sourceContent[.._configuration.Report.MaxSummarySourceCharacters] : sourceContent;
+            var promptKey = string.Equals(info.SourceRegion, "Greek", StringComparison.OrdinalIgnoreCase) &&
+                _configuration.Prompts.ContainsKey("source-user-greek")
+                ? "source-user-greek"
+                : "source-user";
+            var userPrompt = FormatPrompt(promptKey, ("today", today), ("sinceDate", sinceDate), ("sourceName", name), ("sourceUrl", info.Url), ("content", textContent)) +
+                "\n\nIMPORTANT: Always produce an HTML summary from the supplied content. Ignore legal notices, jurisdiction restrictions, cookie text, privacy text, terms and conditions, and risk disclaimers when possible, but do not return a sentinel value or refuse to summarize.";
 
             await aiSemaphore.WaitAsync();
             try
             {
-                var html = await ChatAsync(
-                    [new("system", systemPrompt), new("user", userPrompt)],
-                    maxTokens: 3500, temperature: 0.1);
-                html = StripLeadingPreamble(StripCodeFences(html));
+                var html = await SummarizeWithRetriesAsync(name, systemPrompt, userPrompt);
 
-                if (IsNoContent(html))
+                if (string.IsNullOrWhiteSpace(html) || IsNoContentSentinel(html))
                 {
                     statuses[idx] = SourceStatus.DisclaimerOnly;
-                    sections[idx] = NoContentSection(name, info.Url);
+                    sections[idx] = FallbackSourceSection(name, info.Url, info.Text);
+                    Console.WriteLine($"     ⚠️  {name} — AI would not produce a summary after retries; using extracted source text in the report");
+                }
+                else if (!HasRenderableHtml(html))
+                {
+                    statuses[idx] = ClassifyStatus(info.Text, html);
+                    sections[idx] = PlainTextSummarySection(name, info.Url, html);
+                    Console.WriteLine($"     ℹ️  {name} — rendered plain-text AI summary as HTML");
                 }
                 else
                 {
@@ -143,20 +157,16 @@ public class AiSummarizer : IAsyncDisposable
                 }
                 translations[idx] = await TranslateScrapedContentAsync(info.Text, name);
                 Console.WriteLine($"     {StatusIcon(statuses[idx])}  {name} — {statuses[idx]}");
+                PrintStatusReason(name, statuses[idx], info.Diagnostics);
             }
             catch (Exception ex)
             {
+                // The AI call failed (timeout, transient error, etc.), but the scrape
+                // itself already succeeded — never drop that content from the report.
                 statuses[idx] = SourceStatus.Error;
-                translations[idx] = "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.";
-                Console.WriteLine($"     {StatusIcon(SourceStatus.Error)}  {name} — Error: {ex.Message}");
-                sections[idx] =
-                    $"""
-                    <div class="section">
-                    <h2>📄 {name}</h2>
-                    <p class="source-tag">Πηγή: <a href="{info.Url}">{info.Url}</a></p>
-                    <p><em>Η αναλυτική επεξεργασία δεν ήταν διαθέσιμη αυτή τη στιγμή.</em></p>
-                    </div>
-                    """;
+                Console.WriteLine($"     {StatusIcon(statuses[idx])}  {name} — AI summary failed ({ex.Message}); using extracted source text in the report");
+                sections[idx] = FallbackSourceSection(name, info.Url, info.Text);
+                translations[idx] = await TranslateScrapedContentAsync(info.Text, name);
             }
             finally
             {
@@ -188,8 +198,19 @@ public class AiSummarizer : IAsyncDisposable
 
         try
         {
-            var content = scrapedContent.Length > _configuration.Report.MaxTranslationSourceCharacters ? scrapedContent[.._configuration.Report.MaxTranslationSourceCharacters] : scrapedContent;
-            var translation = await ChatAsync([new("user", FormatPrompt("translation", ("sourceName", sourceName), ("content", content)))], maxTokens: 7500, temperature: 0.1);
+            var sourceContent = IsOpenAiProvider ? RemoveOpenAiBoilerplate(scrapedContent) : scrapedContent;
+            var maxCharacters = IsOpenAiProvider
+                ? Math.Min(_configuration.Report.MaxTranslationSourceCharacters, OpenAiTranslationSourceCharacters)
+                : _configuration.Report.MaxTranslationSourceCharacters;
+            var content = sourceContent.Length > maxCharacters ? sourceContent[..maxCharacters] : sourceContent;
+            var prompt = FormatPrompt("translation", ("sourceName", sourceName), ("content", content));
+            if (IsOpenAiProvider)
+            {
+                prompt += "\n\nΑπόδωσε μόνο την οικονομική και επενδυτική ανάλυση. Παράλειψε " +
+                    "νομικούς όρους, cookie/privacy κείμενα, στοιχεία επικοινωνίας και κάθε " +
+                    "μη χρηματοοικονομικό ή ευαίσθητο περιεχόμενο.";
+            }
+            var translation = await ChatAsync([new("user", prompt)], maxTokens: 7500, temperature: 0.1);
             return StripCodeFences(translation).Trim();
         }
         catch (Exception ex)
@@ -199,20 +220,45 @@ public class AiSummarizer : IAsyncDisposable
         }
     }
 
+    private bool IsOpenAiProvider => string.Equals(_agent.ProviderName, "OpenAI", StringComparison.Ordinal);
+
+    private static string RemoveOpenAiBoilerplate(string scrapedContent)
+    {
+        var boilerplateMarkers = new[]
+        {
+            "terms and conditions", "privacy", "cookie", "jurisdiction", "legal or regulatory",
+            "not intended for", "should not be relied", "disclaimer", "professional adviser",
+            "investment advice", "past performance", "all rights reserved"
+        };
+
+        // Azure evaluates the complete input before the prompt can ask it to ignore a
+        // disclaimer. Remove common scraped legal boilerplate only on the OpenAI route.
+        var financialLines = scrapedContent.Split('\n')
+            .Where(line => !boilerplateMarkers.Any(marker => line.Contains(marker, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        return financialLines.Length == 0 ? scrapedContent : string.Join('\n', financialLines);
+    }
+
     // Content thresholds for status classification
     private const int PartialInputThreshold = 500;   // little source content
-    private const int DisclaimerOutputThreshold = 250; // near-empty AI output
 
-    // Phrases that indicate the AI found no real content (only disclaimer / gated page)
-    private static readonly string[] NoContentSignals =
-    [
-        "μη διαθέσιμο αναλυτικό",
-        "δεν περιλαμβάνει κανένα στοιχείο",
-        "δεν είναι δυνατόν να παρατεθούν",
-        "απαιτεί αποδοχή όρων",
-        "authenticated session",
-        "αφορά αποκλειστικά τη νομική",
-    ];
+    private static void PrintStatusReason(string sourceName, SourceStatus status, string scrapeDiagnostics, bool reusedFromCache = false)
+    {
+        if (status is not (SourceStatus.DisclaimerOnly or SourceStatus.Blocked or SourceStatus.Error)) return;
+
+        var reason = status switch
+        {
+            SourceStatus.DisclaimerOnly => reusedFromCache
+                ? "cached legacy source classification"
+                : "legacy source classification",
+            SourceStatus.Blocked => "the scraper did not retrieve usable page content",
+            SourceStatus.Error => "the AI processing request failed",
+            _ => "unknown",
+        };
+        Console.WriteLine($"        Reason: {reason}");
+        if (!string.IsNullOrWhiteSpace(scrapeDiagnostics))
+            Console.WriteLine($"        Scrape diagnostics: {scrapeDiagnostics}");
+    }
 
     // Strips leading/trailing markdown code fences (```html ... ``` or ``` ... ```) that the
     // model occasionally adds despite being told to return raw HTML only.
@@ -237,40 +283,87 @@ public class AiSummarizer : IAsyncDisposable
         return tagStart > 0 ? text[tagStart..].TrimStart() : text;
     }
 
-    private static bool IsNoContent(string html)
+    // The model sometimes skips summarizing on the first attempt (empty reply, the
+    // NO_CONTENT sentinel, or a refusal). Retry with an increasingly forceful prompt
+    // before falling back to raw scraped text, so a real summary is used whenever the
+    // model is actually capable of producing one.
+    private async Task<string> SummarizeWithRetriesAsync(string name, string systemPrompt, string userPrompt)
     {
-        var stripped = Regex.Replace(html, "<[^>]+>", " ");
-        stripped = Regex.Replace(stripped, @"\s{2,}", " ").Trim();
-        var lower = stripped.ToLowerInvariant();
+        const int maxAttempts = 3;
+        var html = "";
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            var prompt = attempt == 1
+                ? userPrompt
+                : userPrompt + $"\n\nYour previous reply was rejected because it did not contain a real HTML summary. Attempt {attempt}/{maxAttempts}: you MUST summarize the market/investment content that is present, even if brief. Do not reply with NO_CONTENT, an apology, or a refusal.";
+            try
+            {
+                html = StripLeadingPreamble(StripCodeFences(await ChatAsync(
+                    [new("system", systemPrompt), new("user", prompt)],
+                    maxTokens: 3500, temperature: 0.1)));
+            }
+            catch when (attempt < maxAttempts)
+            {
+                continue;
+            }
 
-        // Primary signal: explicit NO_CONTENT marker returned by the model
-        if (lower.Contains("no_content") && lower.Length <= 60)
-            return true;
+            if (!string.IsNullOrWhiteSpace(html) && !IsNoContentSentinel(html))
+                return html;
 
-        // Secondary: disclaimer phrases only count when they dominate a SHORT output.
-        // Long, genuine analyses may mention "disclaimer" etc. incidentally.
-        if (stripped.Length <= 900 && NoContentSignals.Any(sig => lower.Contains(sig)))
-            return true;
-
-        return false;
+            Console.WriteLine($"     ⏳  {name} — attempt {attempt}/{maxAttempts} produced no usable summary, retrying...");
+        }
+        return html;
     }
 
-    private static string NoContentSection(string name, string url) =>
-        $"""
-        <div class="section no-content">
-        <h2>📄 {name}</h2>
-        <p class="source-tag">Πηγή: <a href="{url}">{name}</a></p>
-        <p><em>ℹ️ Δεν βρέθηκε ουσιαστικό αναλυτικό περιεχόμενο για αυτή την πηγή. Η σελίδα περιείχε μόνο όρους χρήσης / αποποίηση ευθύνης ή απαιτούσε σύνδεση.</em></p>
-        </div>
-        """;
+    // The model occasionally still replies with the literal NO_CONTENT sentinel as
+    // plain text despite the "always produce a summary" instruction. Only match a
+    // SHORT reply so a genuine long summary that happens to mention the phrase isn't
+    // discarded.
+    private static bool IsNoContentSentinel(string html)
+    {
+        var stripped = Regex.Replace(html, "<[^>]+>", " ").Trim();
+        return stripped.Length <= 60 && stripped.Contains("no_content", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasRenderableHtml(string html)
+    {
+        return html.Contains("<div", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("<p", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("<h", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("<ul", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("<table", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string PlainTextSummarySection(string name, string url, string summary)
+    {
+        var paragraphs = summary.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => $"<p>{System.Net.WebUtility.HtmlEncode(line)}</p>");
+        return $"""
+            <div class="section">
+            <h2>📄 {System.Net.WebUtility.HtmlEncode(name)}</h2>
+            <p class="source-tag">Πηγή: <a href="{System.Net.WebUtility.HtmlEncode(url)}">{System.Net.WebUtility.HtmlEncode(name)}</a></p>
+            {string.Join(Environment.NewLine, paragraphs)}
+            </div>
+            """;
+    }
+
+    private static string FallbackSourceSection(string name, string url, string sourceText)
+    {
+        var paragraphs = sourceText.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => $"<p>{System.Net.WebUtility.HtmlEncode(line)}</p>");
+        return $"""
+            <div class="section">
+            <h2>📄 {System.Net.WebUtility.HtmlEncode(name)}</h2>
+            <p class="source-tag">Πηγή: <a href="{System.Net.WebUtility.HtmlEncode(url)}">{System.Net.WebUtility.HtmlEncode(name)}</a></p>
+            <p><em>Η αυτόματη σύνοψη δεν ήταν διαθέσιμη. Παρακάτω εμφανίζεται το περιεχόμενο που ανακτήθηκε από την πηγή.</em></p>
+            {string.Join(Environment.NewLine, paragraphs)}
+            </div>
+            """;
+    }
 
     private static SourceStatus ClassifyStatus(string sourceText, string html)
     {
-        var stripped = Regex.Replace(html, "<[^>]+>", " ");
-        stripped = Regex.Replace(stripped, @"\s{2,}", " ").Trim();
-
-        if (stripped.Length < DisclaimerOutputThreshold)
-            return SourceStatus.DisclaimerOnly;
+        // A terse, valid summary must not turn a substantive source into a failure.
         if (sourceText.Length < PartialInputThreshold)
             return SourceStatus.Partial;
         return SourceStatus.Success;

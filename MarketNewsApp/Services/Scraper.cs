@@ -10,6 +10,9 @@ namespace MarketNewsApp.Services;
 
 public class Scraper
 {
+    // Listing pages can contain many eligible articles within the report window.
+    private static readonly TimeSpan PerSourceTimeout = TimeSpan.FromMinutes(5);
+
     private const string UserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -48,7 +51,20 @@ public class Scraper
             await semaphore.WaitAsync();
             try
             {
-                return await ScrapeSiteAsync(browser, site);
+                Console.WriteLine($"  …  Scraping {site.Name}");
+                var scrapeTask = ScrapeSiteAsync(browser, site);
+                var completedTask = await Task.WhenAny(scrapeTask, Task.Delay(PerSourceTimeout));
+                if (completedTask == scrapeTask)
+                    return await scrapeTask;
+
+                _ = scrapeTask.ContinueWith(task => _ = task.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                return (site.Name, new ScrapedSite
+                {
+                    Url = site.Url,
+                    SourceRegion = site.SourceRegion,
+                    Text = $"[{site.Name}: scrape timed out]",
+                    Diagnostics = $"❌ CAUSE: scrape exceeded the {PerSourceTimeout.TotalMinutes:F0}-minute per-source limit",
+                });
             }
             finally
             {
@@ -56,9 +72,11 @@ public class Scraper
             }
         }).ToList();
 
-        var completedResults = await Task.WhenAll(tasks);
-        foreach (var (name, data) in completedResults)
+        while (tasks.Count > 0)
         {
+            var completedTask = await Task.WhenAny(tasks);
+            tasks.Remove(completedTask);
+            var (name, data) = await completedTask;
             results[name] = data;
             Console.WriteLine($"  {(data.IsOk ? "OK" : "WARN")}  {name}  ({data.Url})");
             if (!string.IsNullOrWhiteSpace(data.Diagnostics))
@@ -101,6 +119,8 @@ public class Scraper
             ViewportSize = new ViewportSize { Width = 1280, Height = 800 },
             Locale = "en-US",
         });
+        context.SetDefaultTimeout(Math.Min(site.Timeout, 15000));
+        context.SetDefaultNavigationTimeout(site.Timeout);
 
         // Mask the most common headless-automation tells before any page script runs.
         await context.AddInitScriptAsync("""
@@ -165,6 +185,17 @@ public class Scraper
             // JS-heavy pages (React/Angular) finish hydrating after DOMContentLoaded; give them
             // more settle time so the real content is in the DOM before we extract it.
             await page.WaitForTimeoutAsync(3000);
+
+            // Many newsletter, video, and cookie widgets appear only after the initial
+            // hydration delay. Clear them before text extraction as well as before
+            // screenshots, otherwise selector/body extraction can pick up their CTA or
+            // disclaimer text instead of the article underneath.
+            var lateExtractionOverlay = await DismissOverlaysAsync(page);
+            if (lateExtractionOverlay is not null)
+                diag.Add($"dismissed late-appearing overlay via '{lateExtractionOverlay}' button (pre-extraction check)");
+            var closedExtractionWidgets = await DismissObstructingWidgetsAsync(page);
+            if (closedExtractionWidgets > 0)
+                diag.Add($"closed {closedExtractionWidgets} obstructing widget(s) before extraction");
 
             // Sites with tougher bot-detection (e.g. Akamai) get a longer, human-like
             // warm-up — simulated mouse movement and gradual scrolling — before we
@@ -807,10 +838,8 @@ public class Scraper
         var articleTexts = new List<string>();
         var sitemapDates = await LoadSitemapDatesAsync(articleUrls.Select(article => article.Url));
 
-        foreach (var article in articleUrls.Take(20))
+        foreach (var article in articleUrls)
         {
-            var returnedToList = false;
-            var canContinue = true;
             try
             {
                 var publishedAt = article.PublishedAt
@@ -821,14 +850,16 @@ public class Scraper
                     continue;
                 }
 
-                // Each article is opened from the configured listing page and then returned
-                // to it, preserving the site's own navigation flow and lazy-loaded cards.
-                var link = page.Locator(site.FollowFirstLinkSelector!).Nth(article.LinkIndex);
-                await link.ScrollIntoViewIfNeededAsync();
-                await link.ClickAsync(new() { Timeout = site.Timeout });
+                // Go directly to the resolved URL. Some listings retain hidden duplicate
+                // links, and waiting for those to become clickable can consume an entire
+                // source timeout without ever opening the article.
+                await page.GotoAsync(article.Url, new()
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = site.Timeout,
+                });
                 await page.WaitForTimeoutAsync(1000);
-                returnedToList = true;
-                diagnostics.Add($"clicked article link: {article.Url}");
+                diagnostics.Add($"opened article: {article.Url}");
 
                 publishedAt ??= await GetPublishedDateAsync(page);
                 if (publishedAt is null)
@@ -874,26 +905,6 @@ public class Scraper
             {
                 diagnostics.Add($"skipped article after load/extraction failure ({ex.Message}): {article.Url}");
             }
-            finally
-            {
-                if (returnedToList)
-                {
-                    try
-                    {
-                        await page.GoBackAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
-                        await page.WaitForTimeoutAsync(500);
-                        diagnostics.Add("returned to article list");
-                    }
-                    catch (Exception ex)
-                    {
-                        diagnostics.Add($"could not return to article list ({ex.Message}); stopped source to preserve single-hop traversal");
-                        canContinue = false;
-                    }
-                }
-            }
-
-            if (!canContinue)
-                break;
         }
 
         return articleTexts;
@@ -1108,12 +1119,14 @@ public class Scraper
         "Reject All", "Reject all", "Reject All Cookies", "Decline All", "Decline all",
         "Decline", "Reject", "I Decline", "Do Not Accept", "Refuse All", "Refuse all",
         "Only Necessary", "Necessary Only", "Necessary only", "Continue Without Accepting",
+        "Απόρριψη όλων", "Απόρριψη", "Μόνο απαραίτητα",
     ];
 
     private static readonly string[] ConsentButtonTexts =
     [
         "Accept All", "Accept all", "Accept All Cookies", "I Accept", "I Agree",
         "I agree", "Agree", "Allow All", "Allow all", "Accept", "Got it", "Continue", "OK",
+        "Αποδοχή όλων", "Αποδοχή", "Αποδέχομαι", "Συμφωνώ",
         // Legal/institutional-investor disclaimer gates (e.g. JPMorgan) often render their
         // accept control as a link or ARIA button rather than a plain <button>, with
         // wording like these instead of a generic "Accept".

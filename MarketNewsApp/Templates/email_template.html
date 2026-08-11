@@ -5,114 +5,125 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Εβδομαδιαία Ενημέρωση Αγορών</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  * { box-sizing: border-box; }
   body {
-    background: #0d1117;
-    color: #e6edf3;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f4eef5;
+    color: #25182b;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
     font-size: 15px;
     line-height: 1.6;
+    margin: 0;
+    padding: 0;
   }
-  .wrapper { max-width: 780px; margin: 0 auto; padding: 20px; }
+  .wrapper { max-width: 680px; margin: 0 auto; padding: 24px 16px; }
 
   /* Header */
   .header {
-    background: linear-gradient(135deg, #161b22 0%, #0d1117 100%);
-    border: 1px solid #21262d;
-    border-radius: 12px;
-    padding: 32px;
-    text-align: center;
-    margin-bottom: 24px;
+    background: #2b0033;
+    border: 1px solid #2b0033;
+    border-radius: 8px 8px 0 0;
+    padding: 28px 30px 24px;
+    margin-bottom: 0;
   }
-  .header-logo { font-size: 36px; margin-bottom: 8px; }
+  .header-logo { margin-bottom: 18px; line-height: 1; }
+  .brand-word { color: #ff7a00; font-size: 32px; font-weight: 800; letter-spacing: 0; }
+  .brand-sub { color: #ffe2c2; font-size: 18px; font-weight: 500; margin-left: 4px; }
   .header h1 {
-    font-size: 26px;
+    font-size: 25px;
     font-weight: 700;
-    color: #58a6ff;
-    margin-bottom: 6px;
+    color: #ffffff;
+    line-height: 1.25;
+    margin: 0 0 8px;
   }
-  .header .subtitle { color: #8b949e; font-size: 14px; }
+  .header .subtitle { color: #ffe2c2; font-size: 14px; margin: 0; }
   .header .date-badge {
     display: inline-block;
-    background: #21262d;
-    border: 1px solid #30363d;
-    border-radius: 20px;
-    padding: 4px 16px;
+    background: #ff7a00;
+    border: 1px solid #ff7a00;
+    border-radius: 4px;
+    padding: 5px 10px;
     font-size: 13px;
-    color: #8b949e;
+    font-weight: 700;
+    color: #2b0033;
     margin-top: 12px;
   }
 
   /* Source pills */
   .sources {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 28px;
-    justify-content: center;
+    background: #ffffff;
+    border: 1px solid #e8ddea;
+    border-top: 0;
+    display: block;
+    margin-bottom: 22px;
+    padding: 16px 20px;
+    text-align: center;
   }
   .source-pill {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 20px;
-    padding: 4px 12px;
+    background: #fff4e8;
+    border: 1px solid #ffe2c2;
+    border-radius: 4px;
+    color: #6b2744;
+    display: inline-block;
     font-size: 12px;
-    color: #8b949e;
+    font-weight: 700;
+    margin: 3px 2px;
+    padding: 4px 8px;
   }
 
   /* Sections */
   .section {
-    background: #161b22;
-    border: 1px solid #21262d;
-    border-radius: 10px;
-    padding: 24px;
-    margin-bottom: 20px;
+    background: #ffffff;
+    border: 1px solid #e8ddea;
+    border-left: 4px solid #ff7a00;
+    border-radius: 6px;
+    padding: 22px;
+    margin-bottom: 16px;
   }
   .section h2 {
     font-size: 18px;
-    color: #58a6ff;
-    border-bottom: 1px solid #21262d;
+    color: #2b0033;
+    border-bottom: 1px solid #e8ddea;
     padding-bottom: 10px;
     margin-bottom: 16px;
   }
   .section h3 {
     font-size: 15px;
-    color: #d29922;
+    color: #a44300;
     margin: 14px 0 8px;
   }
-  .section p { color: #c9d1d9; margin-bottom: 10px; }
-  .section ul { padding-left: 20px; color: #c9d1d9; }
+  .section p { color: #3f3144; margin-bottom: 10px; }
+  .section ul { padding-left: 20px; color: #3f3144; }
   .section li { margin-bottom: 6px; }
-  .section strong { color: #e6edf3; }
+  .section strong { color: #2b0033; }
 
   .market-region-heading {
-    border-left: 4px solid #58a6ff;
-    margin: 28px 0 14px;
-    padding: 10px 14px;
+    border-left: 4px solid #ff7a00;
+    margin: 24px 0 12px;
+    padding: 8px 12px;
   }
-  .market-region-heading.greek { border-left-color: #3fb950; }
-  .market-region-heading h2 { font-size: 20px; color: #e6edf3; margin-bottom: 2px; }
-  .market-region-heading p { color: #8b949e; font-size: 13px; }
+  .market-region-heading.greek { border-left-color: #f5a623; }
+  .market-region-heading h2 { font-size: 20px; color: #2b0033; margin: 0 0 2px; }
+  .market-region-heading p { color: #7a6a80; font-size: 13px; margin: 0; }
 
   /* Charts */
   .chart-section {
-    background: #161b22;
-    border: 1px solid #21262d;
-    border-radius: 10px;
+    background: #ffffff;
+    border: 1px solid #e8ddea;
+    border-radius: 6px;
     padding: 20px;
-    margin-bottom: 20px;
+    margin-bottom: 16px;
     text-align: center;
   }
   .chart-section h2 {
     font-size: 16px;
-    color: #58a6ff;
+    color: #2b0033;
     margin-bottom: 14px;
     text-align: left;
   }
   .chart-section img {
     max-width: 100%;
-    border-radius: 8px;
-    border: 1px solid #21262d;
+    border-radius: 4px;
+    border: 1px solid #e8ddea;
   }
 
   /* Per-source page screenshots (charts/tables captured verbatim from the live site) */
@@ -122,8 +133,8 @@
   }
   .screenshot-block img {
     max-width: 100%;
-    border-radius: 8px;
-    border: 1px solid #21262d;
+    border-radius: 4px;
+    border: 1px solid #e8ddea;
     margin-top: 10px;
   }
 
@@ -135,33 +146,34 @@
     margin: 10px 0;
   }
   .market-table th {
-    background: #21262d;
-    color: #58a6ff;
+    background: #2b0033;
+    color: #ffffff;
     padding: 8px 12px;
     text-align: left;
     font-weight: 600;
   }
   .market-table td {
     padding: 7px 12px;
-    border-bottom: 1px solid #21262d;
-    color: #c9d1d9;
+    border-bottom: 1px solid #e8ddea;
+    color: #3f3144;
   }
   .market-table tr:last-child td { border-bottom: none; }
-  .market-table tr:hover td { background: #1c2128; }
-  .up   { color: #3fb950; font-weight: 600; }
-  .down { color: #f85149; font-weight: 600; }
+  .market-table tr:hover td { background: #fff8f1; }
+  .up   { color: #28734f; font-weight: 600; }
+  .down { color: #bd3b35; font-weight: 600; }
 
   /* Source sections */
   .source-section {
-    background: #161b22;
-    border: 1px solid #21262d;
-    border-radius: 10px;
-    padding: 22px 24px;
-    margin-bottom: 20px;
+    background: #ffffff;
+    border: 1px solid #e8ddea;
+    border-top: 4px solid #2b0033;
+    border-radius: 6px;
+    padding: 20px 22px;
+    margin-bottom: 16px;
   }
   .source-section h2 {
     font-size: 17px;
-    color: #58a6ff;
+    color: #2b0033;
     margin-bottom: 6px;
   }
   .source-title {
@@ -171,69 +183,69 @@
     overflow-wrap: anywhere;
     word-break: break-word;
   }
-  .source-title a { color: #58a6ff; text-decoration: none; }
+  .source-title a { color: #2b0033; text-decoration: none; }
   .source-title a:hover { text-decoration: underline; }
   .source-url {
     font-size: 12px;
     margin-bottom: 14px;
     padding: 6px 10px;
-    background: #0d1117;
-    border-radius: 6px;
-    border: 1px solid #30363d;
+    background: #fff8f1;
+    border-radius: 4px;
+    border: 1px solid #ffe2c2;
     font-family: monospace;
     word-break: break-all;
   }
-  .source-url a { color: #3fb950; text-decoration: none; }
+  .source-url a { color: #a44300; text-decoration: none; }
   .source-url a:hover { text-decoration: underline; }
   .source-date {
     font-size: 12px;
     margin: 0 0 14px;
-    color: #d29922;
+    color: #8a5a00;
   }
   .source-section h3 {
     font-size: 14px;
-    color: #d29922;
+    color: #a44300;
     margin: 14px 0 6px;
   }
-  .source-section p  { color: #c9d1d9; margin-bottom: 8px; font-size: 14px; }
-  .source-section ul { padding-left: 18px; color: #c9d1d9; font-size: 14px; }
+  .source-section p  { color: #3f3144; margin-bottom: 8px; font-size: 14px; }
+  .source-section ul { padding-left: 18px; color: #3f3144; font-size: 14px; }
   .source-section li { margin-bottom: 4px; }
-  .source-section strong { color: #e6edf3; }
+  .source-section strong { color: #2b0033; }
 
   /* Sources list */
   .sources-list { list-style: none; padding-left: 0; }
   .sources-list li {
     padding: 8px 12px;
     margin-bottom: 6px;
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
+    background: #fff8f1;
+    border: 1px solid #ffe2c2;
+    border-radius: 4px;
     font-size: 13px;
     word-break: break-all;
   }
-  .sources-list a { color: #3fb950; text-decoration: none; }
+  .sources-list a { color: #a44300; text-decoration: none; }
   .sources-list a:hover { text-decoration: underline; }
 
   /* Footer */
   .footer {
     text-align: center;
-    color: #6e7681;
+    color: #7a6a80;
     font-size: 12px;
-    border-top: 1px solid #21262d;
+    border-top: 1px solid #e8ddea;
     padding-top: 20px;
     margin-top: 10px;
   }
-  .footer a { color: #58a6ff; text-decoration: none; }
+  .footer a { color: #a44300; text-decoration: none; }
 
   /* Alert box */
   .alert {
-    background: #1c2128;
-    border-left: 4px solid #d29922;
-    border-radius: 0 6px 6px 0;
+    background: #fff4e8;
+    border-left: 4px solid #f5a623;
+    border-radius: 0 4px 4px 0;
     padding: 12px 16px;
     margin: 12px 0;
     font-size: 13px;
-    color: #c9d1d9;
+    color: #5d4930;
   }
   @media only screen and (max-width: 600px) {
     .source-title { font-size: 16px !important; }
@@ -245,7 +257,7 @@
 
   <!-- Header -->
   <div class="header">
-    <div class="header-logo">📊</div>
+    <div class="header-logo"><span class="brand-word">Optima</span><span class="brand-sub">bank</span></div>
     <h1>Ενημέρωση Αγορών — Τελευταίες 10 Ημέρες</h1>
     <p class="subtitle">Σύνθεση από 7 κορυφαίους χρηματοοικονομικούς οίκους</p>
     <span class="date-badge">Περίοδος: {{ since_date }} – {{ report_date }}</span>
@@ -267,7 +279,7 @@
 
   <!-- Disclaimer -->
   <div class="alert">
-    ⚠️ <strong>Αποποίηση ευθύνης:</strong> Η παρούσα αναφορά παρέχεται αποκλειστικά για ενημερωτικούς σκοπούς.
+    <strong>Αποποίηση ευθύνης:</strong> Η παρούσα αναφορά παρέχεται αποκλειστικά για ενημερωτικούς σκοπούς.
     Δεν αποτελεί επενδυτική σύσταση. Πάντοτε συμβουλευτείτε εξουσιοδοτημένο χρηματοοικονομικό σύμβουλο
     πριν από οποιαδήποτε επενδυτική απόφαση.
   </div>
@@ -276,7 +288,7 @@
   <div class="footer">
     <p>Δημιουργήθηκε αυτόματα από <strong>Market News AI</strong> · Πηγές: Bloomberg, BlackRock, T. Rowe Price,
     BNP Paribas AM, Edward Jones, JPMorgan AM, Citi</p>
-    <p style="margin-top:6px;">🤖 AI: Groq (Llama 3.3 70B) · 🕷️ Scraper: Playwright · 📧 Email: Gmail SMTP</p>
+    <p style="margin-top:6px;">Market News AI · Επιμελημένη καθημερινή ενημέρωση αγορών</p>
   </div>
 
 </div>

@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using DotNetEnv;
 using MarketNewsApp.Data;
 using MarketNewsApp.Models;
@@ -116,15 +117,22 @@ static void Banner(string msg, char ch = '─')
     Console.WriteLine($"\n{line}\n  {msg}\n{line}");
 }
 
+static void PrintElapsed(string label, Stopwatch stopwatch) =>
+    Console.WriteLine($"  ⏱️  {label}: {stopwatch.Elapsed.TotalSeconds:F1}s ({stopwatch.Elapsed:mm\\:ss})");
+
 static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
 {
     var start = DateTime.Now;
+    var totalTimer = Stopwatch.StartNew();
+    var stepTimer = Stopwatch.StartNew();
     Banner($"🚀  Market News AI  —  {start:dd/MM/yyyy HH:mm}", '═');
 
     // ── Step 1/5: Parallel Extraction ────────────────────────────────────────
     Banner("Step 1/5 · Parallel Extraction");
     Dictionary<string, ScrapedSite> scraped;
-    if (configuration.Features.GetValueOrDefault("scrape-cache") && ScrapeCache.TryLoad(out var cached))
+    Dictionary<string, ScrapedSite> cached = [];
+    var fromCache = configuration.Features.GetValueOrDefault("scrape-cache") && ScrapeCache.TryLoad(out cached);
+    if (fromCache)
     {
         scraped = cached;
         Console.WriteLine($"\n  💾  Cache hit — {scraped.Count} sites loaded (skipping scrape)");
@@ -135,18 +143,25 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
         scraped = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
         Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {scraped.Values.Sum(v => v.Text.Length):N0} chars · {scraped.Values.Sum(v => v.Screenshots.Count)} screenshots");
     }
+    PrintElapsed("Step 1 extraction", stepTimer);
 
     // ── Step 2/5: Cleaning ───────────────────────────────────────────────────
     Banner("Step 2/5 · Cleaning — deduplication & normalization");
+    stepTimer.Restart();
     var cleaned = AiSummarizer.CleanScraped(scraped);
     Console.WriteLine($"  ✅  {cleaned.Count} sites cleaned");
+    AuditLogger.LogRun(scraped, cleaned, perSource: null, fromCache);
+    PrintElapsed("Step 2 cleaning", stepTimer);
 
     // ── Step 3/5: Cache ──────────────────────────────────────────────────────
     Banner("Step 3/5 · Cache — persisting cleaned data");
+    stepTimer.Restart();
     if (configuration.Features.GetValueOrDefault("scrape-cache")) ScrapeCache.Save(cleaned);
+    PrintElapsed("Step 3 cache", stepTimer);
 
     // ── Step 4/5: Per-source AI summaries ────────────────────────────────────
     Banner("Step 4/5 · Per-source AI summaries (parallel)");
+    stepTimer.Restart();
     var summaryCache = configuration.Features.GetValueOrDefault("summary-cache") ? SummaryCache.Load() : null;
     if (summaryCache != null)
         Console.WriteLine($"  💾  Same-day summary cache found — reusing unchanged sources, thinking only about new content");
@@ -159,6 +174,7 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
         {
             perSource = summarizer.SummarizePerSourceAsync(cleaned, summaryCache?.PerSource).GetAwaiter().GetResult();
             Console.WriteLine($"  ✅  {perSource.Count} per-source summaries ready");
+            PrintElapsed("Step 4 AI summaries", stepTimer);
         }
         catch (Exception ex)
         {
@@ -169,14 +185,19 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
 
         // ── Step 5/5: Final synthesis + HTML template ─────────────────────────────
         Banner("Step 5/5 · Final synthesis + HTML template");
+        stepTimer.Restart();
 
         var newPerSourceCache = cleaned.ToDictionary(
             kv => kv.Key,
-            kv => new SummaryCache.SourceEntry(
-                SummaryCache.ComputeHash($"source-only-v2\n{kv.Value.Text}"),
-                perSource[kv.Key].Html,
-                perSource[kv.Key].Status,
-                perSource[kv.Key].TranslatedContent));
+            kv =>
+            {
+                var summary = perSource[kv.Key];
+                var contentHash = SummaryCache.ComputeHash($"source-only-v4-retry-ai-failures\n{kv.Value.Text}");
+                if (summary.Status is not (SourceStatus.Success or SourceStatus.Partial))
+                    contentHash = SummaryCache.ComputeHash($"{contentHash}\n{summary.Status}");
+
+                return new SummaryCache.SourceEntry(contentHash, summary.Html, summary.Status, summary.TranslatedContent);
+            });
         var compositeHash = SummaryCache.ComputeCompositeHash(newPerSourceCache.Values.Select(v => v.ContentHash));
 
         string synthesis;
@@ -234,12 +255,12 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
                 Environment.Exit(1);
             }
         }
+        PrintElapsed("Step 5 synthesis and delivery", stepTimer);
     }
     finally
     {
         summarizer.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
-    var elapsed = (DateTime.Now - start).TotalSeconds;
-    Banner($"✅  Done in {elapsed:F0}s  —  {DateTime.Now:HH:mm:ss}", '═');
+    Banner($"✅  Done in {totalTimer.Elapsed.TotalSeconds:F0}s  —  {DateTime.Now:HH:mm:ss}", '═');
 }

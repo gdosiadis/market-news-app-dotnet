@@ -4,9 +4,15 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
-var databasePath = builder.Configuration["Sqlite:Path"]
-    ?? Path.Combine(builder.Environment.ContentRootPath, "..", "MarketNewsApp", "market-news.db");
-builder.Services.AddDbContextFactory<MarketNewsDbContext>(options => options.UseSqlite($"Data Source={Path.GetFullPath(databasePath)}"));
+var sqliteConnectionString = Environment.GetEnvironmentVariable("SQLITE_CONNECTION_STRING");
+if (string.IsNullOrWhiteSpace(sqliteConnectionString))
+{
+    var databasePath = builder.Configuration["Sqlite:Path"]
+        ?? Path.Combine(builder.Environment.ContentRootPath, "..", "MarketNewsApp", "market-news.db");
+    sqliteConnectionString = $"Data Source={Path.GetFullPath(databasePath)}";
+}
+
+builder.Services.AddDbContextFactory<MarketNewsDbContext>(options => options.UseSqlite(sqliteConnectionString));
 builder.Services.AddScoped<AdminConfigurationService>();
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddControllersWithViews();
