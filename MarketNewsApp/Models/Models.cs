@@ -54,6 +54,10 @@ public class ScrapedSite
     // "date unknown, retrieved on <today>" line in that case so the email always shows a date.
     public DateTimeOffset? PublishedDate { get; set; }
 
+    // Listing sources can contribute several articles to one report. Their individual
+    // dates are retained separately instead of pretending the source has one date.
+    public List<DateTimeOffset> PublishedDates { get; set; } = [];
+
     // Base64-encoded PNG screenshots of chart/table elements captured directly from the
     // live page (not AI-rendered) — these are embedded as-is in the email so charts/tables
     // are always an exact visual copy of what the source actually published.
@@ -85,5 +89,6 @@ public record SourceSummary(
     IReadOnlyList<string> Screenshots,
     string TranslatedContent,
     string ScrapeDiagnostics,
-    DateTimeOffset? PublishedDate = null);
+    DateTimeOffset? PublishedDate = null,
+    IReadOnlyList<DateTimeOffset>? PublishedDates = null);
 

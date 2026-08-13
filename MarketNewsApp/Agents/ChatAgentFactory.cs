@@ -42,6 +42,15 @@ public static class ChatAgentFactory
             return new OpenAiChatAgent(settings.OpenAiApiKey, settings.OpenAiModel, settings.OpenAiEndpoint);
         }
 
+        // OpenAI remains the preferred provider, but transient network/DNS failures
+        // can use the logged-in Copilot client without masking API-level failures.
+        if (provider == "openai-copilot-fallback" && !string.IsNullOrWhiteSpace(settings.OpenAiApiKey))
+        {
+            return new FailoverChatAgent(
+                new OpenAiChatAgent(settings.OpenAiApiKey, settings.OpenAiModel, settings.OpenAiEndpoint),
+                new CopilotChatAgent(settings.CopilotModel));
+        }
+
         // GitHub Copilot SDK (default) — uses the logged-in Copilot user,
         // routed through GitHub endpoints that the corporate firewall allows.
         return new CopilotChatAgent(settings.CopilotModel);

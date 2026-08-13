@@ -1,0 +1,41 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "build",
+                "../../Users/017865/AppData/Roaming/Code/User/workspaceStorage/ff73551f4ee11a693553cf0df82e7141/ms-dotnettools.csdevkit/market-news-app-dotnet.sln",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary;ForceNoAlign"
+            ],
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "publish",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "publish",
+                "../../Users/017865/AppData/Roaming/Code/User/workspaceStorage/ff73551f4ee11a693553cf0df82e7141/ms-dotnettools.csdevkit/market-news-app-dotnet.sln",
+                "/property:GenerateFullPaths=true",
+                "/consoleloggerparameters:NoSummary;ForceNoAlign"
+            ],
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "watch",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "watch",
+                "run",
+                "--project",
+                "../../Users/017865/AppData/Roaming/Code/User/workspaceStorage/ff73551f4ee11a693553cf0df82e7141/ms-dotnettools.csdevkit/market-news-app-dotnet.sln"
+            ],
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}

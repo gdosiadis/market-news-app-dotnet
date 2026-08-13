@@ -32,11 +32,12 @@ public sealed class OpenAiChatAgent : IChatAgent
             _ => OpenAiSdkChatMessage.CreateUserMessage(message.Content),
         }));
 
-        var completion = await _client.CompleteChatAsync(sdkMessages, new ChatCompletionOptions
-        {
-            MaxOutputTokenCount = maxTokens,
-            Temperature = (float)temperature,
-        });
+        var completion = await OpenAiResilience.TransportRetry.ExecuteAsync(async _ =>
+            await _client.CompleteChatAsync(sdkMessages, new ChatCompletionOptions
+            {
+                MaxOutputTokenCount = maxTokens,
+                Temperature = (float)temperature,
+            }));
 
         return completion.Value.Content.FirstOrDefault()?.Text ?? string.Empty;
     }

@@ -6,11 +6,27 @@ using MarketNewsApp.Models;
 using MarketNewsApp.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Serilog;
+using Serilog.Context;
+using Serilog.Formatting.Json;
 using Scriban;
 
 // Load .env file — search project directory first, then CWD
 var envFile = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".env");
 Env.Load(File.Exists(envFile) ? envFile : ".env");
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Application", "MarketNewsApp")
+    .WriteTo.Console()
+    .WriteTo.File(
+        new JsonFormatter(),
+        Path.Combine("logs", "market-news-.json"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        shared: true)
+    .CreateLogger();
 
 var connectionString = Environment.GetEnvironmentVariable("SQLITE_CONNECTION_STRING")
     ?? "Data Source=market-news.db";
@@ -23,13 +39,15 @@ var rootCommand = new RootCommand("Market News AI — Daily Email Report");
 
 var nowOption = new Option<bool>("--now", "Run once and exit");
 var testOption = new Option<bool>("--test", "Dry run — save HTML, no email");
+var sourceOption = new Option<string?>("--source", "Run only the named source and bypass same-day caches");
 var debugDomOption = new Option<string?>("--debug-dom", "Dump figure/chart element info for a URL and exit");
 
 rootCommand.AddOption(nowOption);
 rootCommand.AddOption(testOption);
+rootCommand.AddOption(sourceOption);
 rootCommand.AddOption(debugDomOption);
 
-rootCommand.SetHandler(async (bool now, bool test, string? debugDomUrl) =>
+rootCommand.SetHandler(async (bool now, bool test, string? sourceName, string? debugDomUrl) =>
 {
     if (debugDomUrl is not null)
     {
@@ -37,15 +55,44 @@ rootCommand.SetHandler(async (bool now, bool test, string? debugDomUrl) =>
         return;
     }
 
+    if (!string.IsNullOrWhiteSpace(sourceName) && !now && !test)
+    {
+        Console.WriteLine("--source requires --test or --now.");
+        return;
+    }
+
+    var configuration = configurationService.GetAsync().GetAwaiter().GetResult();
+    if (!string.IsNullOrWhiteSpace(sourceName))
+    {
+        var matchingSources = configuration.Sources
+            .Where(source => source.Name.Contains(sourceName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matchingSources.Count != 1)
+        {
+            Console.WriteLine(matchingSources.Count == 0
+                ? $"No enabled source matches '{sourceName}'."
+                : $"Source filter '{sourceName}' is ambiguous: {string.Join(", ", matchingSources.Select(source => source.Name))}");
+            return;
+        }
+
+        var features = new Dictionary<string, bool>(configuration.Features, StringComparer.OrdinalIgnoreCase)
+        {
+            ["scrape-cache"] = false,
+            ["summary-cache"] = false,
+        };
+        configuration = configuration with { Sources = matchingSources, Features = features };
+        Console.WriteLine($"Testing only {matchingSources[0].Name}; same-day caches are bypassed.");
+    }
+
     if (test)
     {
-        RunPipeline(configurationService.GetAsync().GetAwaiter().GetResult(), dryRun: true);
+        RunPipeline(configuration, dryRun: true);
         return;
     }
 
     if (now)
     {
-        RunPipeline(configurationService.GetAsync().GetAwaiter().GetResult(), dryRun: false);
+        RunPipeline(configuration, dryRun: false);
         return;
     }
 
@@ -56,7 +103,7 @@ rootCommand.SetHandler(async (bool now, bool test, string? debugDomUrl) =>
     // Simple scheduler loop
     while (true)
     {
-        var configuration = configurationService.GetAsync().GetAwaiter().GetResult();
+        configuration = configurationService.GetAsync().GetAwaiter().GetResult();
         var sendTime = configuration.Schedule.DailySendTime;
         var now2 = DateTime.Now;
         var targetTime = TimeSpan.Parse(sendTime);
@@ -67,9 +114,21 @@ rootCommand.SetHandler(async (bool now, bool test, string? debugDomUrl) =>
         }
         Thread.Sleep(30000);
     }
-}, nowOption, testOption, debugDomOption);
+}, nowOption, testOption, sourceOption, debugDomOption);
 
-return rootCommand.Invoke(args);
+try
+{
+    return rootCommand.Invoke(args);
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Market News pipeline terminated unexpectedly");
+    return 1;
+}
+finally
+{
+    Log.CloseAndFlush();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -122,9 +181,12 @@ static void PrintElapsed(string label, Stopwatch stopwatch) =>
 
 static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
 {
+    var runId = Guid.NewGuid().ToString("N");
+    using var runContext = LogContext.PushProperty("RunId", runId);
     var start = DateTime.Now;
     var totalTimer = Stopwatch.StartNew();
     var stepTimer = Stopwatch.StartNew();
+    Log.Information("Pipeline started. DryRun: {DryRun}", dryRun);
     Banner($"🚀  Market News AI  —  {start:dd/MM/yyyy HH:mm}", '═');
 
     // ── Step 1/5: Parallel Extraction ────────────────────────────────────────
@@ -142,6 +204,7 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
         var scraper = new Scraper(configuration.Sources);
         scraped = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
         Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {scraped.Values.Sum(v => v.Text.Length):N0} chars · {scraped.Values.Sum(v => v.Screenshots.Count)} screenshots");
+        Log.Information("Scrape completed. Sources: {SourceCount}, Characters: {CharacterCount}, Screenshots: {ScreenshotCount}", scraped.Count, scraped.Values.Sum(v => v.Text.Length), scraped.Values.Sum(v => v.Screenshots.Count));
     }
     PrintElapsed("Step 1 extraction", stepTimer);
 
@@ -241,6 +304,7 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
             var outPath = Path.Combine(Directory.GetCurrentDirectory(), "report.html");
             File.WriteAllText(outPath, html);
             Console.WriteLine($"  ✅  Saved to {outPath}");
+            Log.Information("Dry-run report saved to {ReportPath}", outPath);
         }
         else
         {
@@ -263,4 +327,5 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
     }
 
     Banner($"✅  Done in {totalTimer.Elapsed.TotalSeconds:F0}s  —  {DateTime.Now:HH:mm:ss}", '═');
+    Log.Information("Pipeline completed in {ElapsedMs}ms", totalTimer.ElapsedMilliseconds);
 }

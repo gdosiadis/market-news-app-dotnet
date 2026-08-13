@@ -43,7 +43,7 @@ public class AiSummarizer : IAsyncDisposable
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(180);
             var cleaned = string.Join("\n", lines);
-            result[name] = new ScrapedSite { Url = site.Url, SourceRegion = site.SourceRegion, Text = cleaned, Diagnostics = site.Diagnostics, Screenshots = site.Screenshots, PublishedDate = site.PublishedDate };
+            result[name] = new ScrapedSite { Url = site.Url, SourceRegion = site.SourceRegion, Text = cleaned, Diagnostics = site.Diagnostics, Screenshots = site.Screenshots, PublishedDate = site.PublishedDate, PublishedDates = site.PublishedDates };
             Console.WriteLine($"  🧹  {name}: {site.Text.Length:N0} → {cleaned.Length:N0} chars");
         }
         return result;
@@ -185,7 +185,8 @@ public class AiSummarizer : IAsyncDisposable
                 siteList[i].Value.Screenshots,
                 translations[i] ?? "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.",
                 siteList[i].Value.Diagnostics,
-                siteList[i].Value.PublishedDate);
+                siteList[i].Value.PublishedDate,
+                siteList[i].Value.PublishedDates);
 
         PrintStatusSummary(result);
         return result;
@@ -220,7 +221,7 @@ public class AiSummarizer : IAsyncDisposable
         }
     }
 
-    private bool IsOpenAiProvider => string.Equals(_agent.ProviderName, "OpenAI", StringComparison.Ordinal);
+    private bool IsOpenAiProvider => _agent.ProviderName.StartsWith("OpenAI", StringComparison.Ordinal);
 
     private static string RemoveOpenAiBoilerplate(string scrapedContent)
     {
@@ -468,7 +469,7 @@ public class AiSummarizer : IAsyncDisposable
             foreach (var (name, summary) in group)
             {
                 if (string.IsNullOrEmpty(summary.Html)) continue;
-                var section = RenderSourceSection(summary.Html, name, summary.Url, summary.PublishedDate);
+                var section = RenderSourceSection(summary.Html, name, summary.Url, summary.PublishedDate, summary.PublishedDates);
                 parts.Add(_configuration.Report.IncludeTranslatedContent ? AddInlineTranslatedContent(section, summary.TranslatedContent, summary.ScrapeDiagnostics) : section);
                 if (summary.Screenshots.Count > 0)
                     parts.Add(BuildScreenshotBlock(name, summary.Screenshots));
@@ -483,21 +484,27 @@ public class AiSummarizer : IAsyncDisposable
 
     private static string MarketLabel(string sourceRegion) => IsGreekSource(sourceRegion) ? "Ελλάδα" : "Διεθνείς";
 
-    private static string RenderSourceSection(string html, string sourceName, string sourceUrl, DateTimeOffset? publishedDate)
+    private static string RenderSourceSection(string html, string sourceName, string sourceUrl, DateTimeOffset? publishedDate, IReadOnlyList<DateTimeOffset>? publishedDates)
     {
         var encodedName = System.Net.WebUtility.HtmlEncode(sourceName);
         var encodedUrl = System.Net.WebUtility.HtmlEncode(sourceUrl);
         var title = $"<h2 class=\"source-title\"><a href=\"{encodedUrl}\" target=\"_blank\">📄 {encodedName}</a></h2>";
-        var dateText = publishedDate is not null
-            ? publishedDate.Value.ToString("dd/MM/yyyy")
-            : $"άγνωστη (ανακτήθηκε {DateTimeOffset.Now:dd/MM/yyyy})";
+        var dates = publishedDates?.Distinct().OrderByDescending(date => date).ToList() ?? [];
+        var dateLabel = dates.Count > 1 ? "Ημερομηνίες δημοσίευσης" : "Ημερομηνία δημοσίευσης";
+        var dateText = dates.Count > 0
+            ? string.Join(", ", dates.Select(date => date.ToString("dd/MM/yyyy")))
+            : publishedDate is not null
+                ? publishedDate.Value.ToString("dd/MM/yyyy")
+                : $"άγνωστη (ανακτήθηκε {DateTimeOffset.Now:dd/MM/yyyy})";
         var sourceTag = $"<p class=\"source-tag\">Πηγή: <a href=\"{encodedUrl}\" target=\"_blank\">{encodedUrl}</a></p>" +
-            $"<p class=\"source-date\">🗓️ Ημερομηνία δημοσίευσης: {dateText}</p>";
+            $"<p class=\"source-date\">🗓️ {dateLabel}: {dateText}</p>";
 
         var headingPattern = new Regex(@"<h2(?:\s[^>]*)?>.*?</h2>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        var sourceTagPattern = new Regex(@"<p\s+class=\""source-tag\""[^>]*>.*?</p>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        var sourceTagPattern = new Regex(@"<p\s+class=""source-tag""[^>]*>.*?</p>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         var section = headingPattern.Replace(html, title, count: 1);
-        section = sourceTagPattern.Replace(section, sourceTag, count: 1);
+        section = sourceTagPattern.IsMatch(section)
+            ? sourceTagPattern.Replace(section, sourceTag, count: 1)
+            : headingPattern.Replace(section, $"{title}{sourceTag}", count: 1);
         return section;
     }
 
