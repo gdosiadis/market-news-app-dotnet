@@ -4,6 +4,9 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace MarketNewsApp.Services;
@@ -17,6 +20,11 @@ public class Scraper
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/124.0.0.0 Safari/537.36";
+
+    // Used only when a Greek listing source has no site-specific selector. Keeping this
+    // narrow avoids opening navigation links on direct weekly-report/article pages.
+    private const string GreekListingArticleLinkSelector =
+        "article h2 a, article h3 a, [class*='article' i] h2 a, [class*='article' i] h3 a, [class*='card' i] h2 a";
 
     private readonly IReadOnlyList<SiteConfig> _sites;
 
@@ -113,14 +121,15 @@ public class Scraper
 
     private async Task<(string Name, ScrapedSite Data)> ScrapeSiteAsync(IBrowser browser, SiteConfig site)
     {
+        var timeout = EffectiveTimeout(site);
         var context = await browser.NewContextAsync(new()
         {
             UserAgent = UserAgent,
             ViewportSize = new ViewportSize { Width = 1280, Height = 800 },
             Locale = "en-US",
         });
-        context.SetDefaultTimeout(Math.Min(site.Timeout, 15000));
-        context.SetDefaultNavigationTimeout(site.Timeout);
+        context.SetDefaultTimeout(Math.Min(timeout, 15000));
+        context.SetDefaultNavigationTimeout(timeout);
 
         // Mask the most common headless-automation tells before any page script runs.
         await context.AddInitScriptAsync("""
@@ -134,7 +143,7 @@ public class Scraper
         var page = await context.NewPageAsync();
         try
         {
-            var response = await page.GotoAsync(site.Url, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
+            var response = await NavigateWithRetryAsync(page, site, diag);
             var status = response?.Status ?? 0;
             diag.Add($"HTTP {status}");
             if (status is >= 400 or 0)
@@ -142,23 +151,29 @@ public class Scraper
 
             try
             {
-                await page.WaitForSelectorAsync(site.WaitFor, new() { Timeout = 8000 });
+                await page.WaitForSelectorAsync(site.WaitFor, new() { Timeout = ContentWaitTimeout(site) });
             }
             catch (TimeoutException)
             {
                 diag.Add($"wait-for selector '{site.WaitFor}' timed out (page may not have hydrated)");
             }
 
-            var recentArticleTexts = new List<string>();
+            var recentArticles = new List<LinkedArticleContent>();
 
             // Some sites configure a landing/list page as their Url because the real articles
             // live on separate, dynamically-named pages. Read every linked article published
             // inside the report window, rather than treating the first card as the whole source.
-            if (!string.IsNullOrWhiteSpace(site.FollowFirstLinkSelector))
+            var articleLinkSelector = ArticleLinkSelector(site);
+            if (articleLinkSelector is not null)
             {
                 try
                 {
-                    recentArticleTexts = await ReadRecentLinkedArticlesAsync(page, site, diag);
+                    var listingOverlay = await DismissOverlaysAsync(page);
+                    if (listingOverlay is not null)
+                        diag.Add($"dismissed listing overlay via '{listingOverlay}' button");
+                    if (string.IsNullOrWhiteSpace(site.FollowFirstLinkSelector))
+                        diag.Add("no site-specific article-link selector configured; using Greek listing auto-discovery");
+                    recentArticles = await ReadRecentLinkedArticlesAsync(page, site, articleLinkSelector, diag);
                 }
                 catch (Exception ex)
                 {
@@ -176,7 +191,24 @@ public class Scraper
             // we don't just capture a teaser snippet or the surrounding disclaimer text.
             if (site.ExpandButtonTexts.Length > 0)
             {
-                var expanded = await ExpandCollapsedContentAsync(page, site.ExpandButtonTexts);
+                var expanded = new List<string>();
+                if (string.Equals(site.Name, "JPMorgan Weekly Market Recap", StringComparison.OrdinalIgnoreCase))
+                {
+                    var jpmorganReadMore = page.Locator("#wmr-readmore-button");
+                    try
+                    {
+                        await jpmorganReadMore.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 15000 });
+                        await ClickWithJsFallbackAsync(jpmorganReadMore);
+                        await page.WaitForTimeoutAsync(500);
+                        expanded.Add("Read more (#wmr-readmore-button)");
+                    }
+                    catch (TimeoutException)
+                    {
+                        diag.Add("JPMorgan Read more button did not render before extraction");
+                    }
+                }
+
+                expanded.AddRange(await ExpandCollapsedContentAsync(page, site.ExpandButtonTexts));
                 diag.Add(expanded.Count == 0
                     ? "no expand-toggle buttons found/clicked"
                     : $"expanded {expanded.Count} toggle(s): {string.Join(", ", expanded)}");
@@ -209,7 +241,7 @@ public class Scraper
                 if (bodySoFar.Contains("edgesuite.net", StringComparison.OrdinalIgnoreCase))
                 {
                     diag.Add("block page still present after humanized warm-up — retrying with reload");
-                    await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = site.Timeout });
+                    await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = timeout });
                     await DismissOverlaysAsync(page);
                     await HumanizeAsync(page);
                     await page.WaitForTimeoutAsync(site.ExtraSettleMs);
@@ -252,7 +284,18 @@ public class Scraper
             if (closedWidgets > 0)
                 diag.Add($"closed {closedWidgets} obstructing widget(s) before screenshots");
 
-            var screenshots = await CaptureScreenshotsAsync(page, site);
+            var screenshots = recentArticles.Count > 0
+                ? []
+                : await CaptureScreenshotsAsync(page, site);
+            foreach (var screenshot in recentArticles.SelectMany(article => article.Screenshots))
+            {
+                if (screenshots.Count >= MaxScreenshotsPerSite) break;
+                screenshots.Add(screenshot);
+            }
+            var screenshotCountBeforeDeduplication = screenshots.Count;
+            screenshots = screenshots.Distinct(StringComparer.Ordinal).ToList();
+            if (screenshots.Count < screenshotCountBeforeDeduplication)
+                diag.Add($"removed {screenshotCountBeforeDeduplication - screenshots.Count} duplicate screenshot(s)");
             diag.Add($"captured {screenshots.Count} chart/table screenshot(s)");
 
             var parts = new List<string>();
@@ -294,21 +337,49 @@ public class Scraper
             }
 
             DateTimeOffset? publishedAt = null;
-            if (recentArticleTexts.Count > 0)
+            if (recentArticles.Count > 0)
             {
-                rawText = string.Join("\n\n", recentArticleTexts);
+                rawText = string.Join("\n\n", recentArticles.Select(article => article.Text));
                 cleanedText = CleanText(rawText);
-                diag.Add($"combined {recentArticleTexts.Count} article(s) published within the last 10 days");
+                diag.Add($"combined {recentArticles.Count} article(s) published within the last 10 days");
             }
             else
             {
+                // JPMorgan's weekly recap content is rendered from this page-local model
+                // endpoint. The page shell can load successfully while its widget remains a
+                // skeleton in headless Chromium, leaving no Read more button to click.
+                if (cleanedText.Length < 200 && string.Equals(site.Name, "JPMorgan Weekly Market Recap", StringComparison.OrdinalIgnoreCase))
+                {
+                    var recap = await TryGetJpmorganWeeklyRecapAsync(page, diag);
+                    if (recap is not null)
+                    {
+                        rawText = recap.Value.Text;
+                        cleanedText = CleanText(rawText);
+                        publishedAt = recap.Value.PublishedDate;
+                    }
+                }
+
+                // Morning View serves an empty React shell to non-hydrated pages, while its
+                // own public feed contains the current article bodies and author labels.
+                // Select the stable MARKET VIEW label instead of relying on its changing slug.
+                if (cleanedText.Length < 300 && IsMorningView(site))
+                {
+                    var marketView = await TryGetMorningViewArticleAsync(diag);
+                    if (marketView is not null)
+                    {
+                        rawText = marketView.Value.Text;
+                        cleanedText = CleanText(rawText);
+                        publishedAt = marketView.Value.PublishedDate;
+                    }
+                }
+
                 // Single-page sites (no article-list step above already stamps its own
                 // per-article date) — best-effort detect the article's publish date from
                 // meta tags / JSON-LD / visible date text so every scraped source carries
                 // a date the reader can trust, not just an implicit "scraped today".
                 try
                 {
-                    publishedAt = await GetPublishedDateAsync(page);
+                    publishedAt ??= await GetPublishedDateAsync(page);
                 }
                 catch (Exception ex)
                 {
@@ -365,12 +436,13 @@ public class Scraper
                 Text = string.IsNullOrWhiteSpace(cleanedText) ? $"[{site.Name}: no content extracted]" : cleanedText,
                 Diagnostics = string.Join(" | ", diag),
                 Screenshots = screenshots,
-                PublishedDate = publishedAt
+                PublishedDate = publishedAt,
+                PublishedDates = recentArticles.Select(article => article.PublishedAt).Distinct().OrderByDescending(date => date).ToList()
             });
         }
         catch (TimeoutException ex)
         {
-            diag.Add($"❌ CAUSE: page load timed out after {site.Timeout}ms ({ex.Message})");
+            diag.Add($"❌ CAUSE: page load timed out after {timeout}ms ({ex.Message})");
             return (site.Name, new ScrapedSite { Url = site.Url, SourceRegion = site.SourceRegion, Text = $"[{site.Name}: page load timed out]", Diagnostics = string.Join(" | ", diag) });
         }
         catch (Exception ex)
@@ -383,6 +455,46 @@ public class Scraper
             await context.CloseAsync();
         }
     }
+
+    private static async Task<IResponse?> NavigateWithRetryAsync(IPage page, SiteConfig site, List<string> diagnostics)
+    {
+        var timeout = EffectiveTimeout(site);
+        var waitUntil = UsesContentAwareNavigation(site) ? WaitUntilState.Commit : WaitUntilState.DOMContentLoaded;
+        try
+        {
+            return await page.GotoAsync(site.Url, new() { WaitUntil = waitUntil, Timeout = timeout });
+        }
+        catch (TimeoutException)
+        {
+            diagnostics.Add($"initial navigation timed out after {timeout}ms; retrying once");
+            await page.WaitForTimeoutAsync(1000);
+            return await page.GotoAsync(site.Url, new() { WaitUntil = waitUntil, Timeout = timeout });
+        }
+        catch (PlaywrightException ex) when (ex.Message.Contains("net::ERR_EMPTY_RESPONSE", StringComparison.OrdinalIgnoreCase))
+        {
+            diagnostics.Add("initial navigation returned an empty network response; retrying once");
+            await page.WaitForTimeoutAsync(1000);
+            return await page.GotoAsync(site.Url, new() { WaitUntil = waitUntil, Timeout = timeout });
+        }
+    }
+
+    private static int EffectiveTimeout(SiteConfig site) =>
+        string.Equals(site.Name, "Euro2Day", StringComparison.OrdinalIgnoreCase)
+            ? Math.Max(site.Timeout, 45000)
+            : UsesContentAwareNavigation(site) ? Math.Max(site.Timeout, 60000) : site.Timeout;
+
+    private static bool UsesContentAwareNavigation(SiteConfig site) =>
+        IsMorningView(site) ||
+        string.Equals(site.Name, "T. Rowe Price Global Markets", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(site.Name, "JPMorgan Weekly Market Recap", StringComparison.OrdinalIgnoreCase);
+
+    private static int ContentWaitTimeout(SiteConfig site) =>
+        UsesContentAwareNavigation(site) ? 30000 : 8000;
+
+    private static int ArticleNavigationTimeout(SiteConfig site) =>
+        string.Equals(site.Name, "Euro2Day", StringComparison.OrdinalIgnoreCase)
+            ? 30000
+            : EffectiveTimeout(site);
 
     // Generic selectors for chart/table elements, used when a SiteConfig doesn't specify its
     // own ScreenshotSelectors override. Broad on purpose (charts are implemented very
@@ -397,13 +509,14 @@ public class Scraper
     // caption (typical of a data chart's "Source: ..." line) before accepting it.
     private static readonly string[] DefaultScreenshotSelectors =
     [
-        "table",
         "svg",
         "canvas",
         "figure",
         "[class*='chart' i]",
         "[class*='graph' i]",
         "[id*='chart' i]",
+        "img[data-watermark]",
+        "table",
     ];
 
     private const int MaxScreenshotsPerSite = 6;
@@ -617,6 +730,8 @@ public class Scraper
         {
             var tagName = await el.EvaluateAsync<string>("el => el.tagName.toLowerCase()");
             if (tagName is "table" or "svg" or "canvas") return true;
+            if (tagName == "img")
+                return await el.EvaluateAsync<bool>("el => el.hasAttribute('data-watermark')");
 
             return await el.EvaluateAsync<bool>(
                 @"el => {
@@ -802,14 +917,35 @@ public class Scraper
         catch { }
     }
 
-    private static async Task<List<string>> ReadRecentLinkedArticlesAsync(IPage page, SiteConfig site, List<string> diagnostics)
+    private static string? ArticleLinkSelector(SiteConfig site) =>
+        IsMorningView(site) ? "a[href]"
+        : !string.IsNullOrWhiteSpace(site.FollowFirstLinkSelector)
+            ? site.FollowFirstLinkSelector
+            : IsGreekSource(site) ? GreekListingArticleLinkSelector : null;
+
+    private static async Task<List<LinkedArticleContent>> ReadRecentLinkedArticlesAsync(IPage page, SiteConfig site, string articleLinkSelector, List<string> diagnostics)
     {
-        var listedArticles = await page.EvaluateAsync<ListedArticle[]>("""
+        var listedArticles = IsMorningView(site)
+            ? await page.EvaluateAsync<ListedArticle[]>("""
+            () => Array.from(document.querySelectorAll('a[href]')).map((link, index) => {
+                const card = link.closest('article, li, [class*="column" i], [class*="card" i]');
+                return {
+                    linkIndex: index,
+                    href: link.getAttribute('href') ?? '',
+                    dateText: card?.querySelector('time')?.getAttribute('datetime')
+                        ?? card?.querySelector('time')?.textContent
+                        ?? card?.textContent
+                        ?? ''
+                };
+            }).filter(article => /MARKET\s+VIEW/i.test(article.dateText))
+            """)
+            : await page.EvaluateAsync<ListedArticle[]>("""
             selector => Array.from(document.querySelectorAll(selector)).map((link, index) => {
                 const card = link.closest('.chip, article, li, [class*="card" i], [class*="article" i]');
                 return {
                     linkIndex: index,
                     href: link.getAttribute('href') ?? '',
+                    contextText: [link.textContent, card?.textContent].filter(Boolean).join(' '),
                     dateText: [
                         card?.getAttribute('data-date'),
                         card?.querySelector('time')?.getAttribute('datetime'),
@@ -819,13 +955,14 @@ public class Scraper
                     ].filter(Boolean).join(' ')
                 };
             })
-            """, site.FollowFirstLinkSelector!);
+            """, articleLinkSelector);
         var articleUrls = new List<(string Url, DateTimeOffset? PublishedAt, int LinkIndex)>();
         foreach (var article in listedArticles)
         {
             if (string.IsNullOrWhiteSpace(article.Href)) continue;
 
             if (Uri.TryCreate(new Uri(page.Url), article.Href, out var resolved) &&
+                IsArticleUrl(site, resolved) &&
                 !articleUrls.Any(item => item.Url.Equals(resolved.ToString(), StringComparison.OrdinalIgnoreCase)))
             {
                 var listedDate = TryParsePublishedDate(article.DateText);
@@ -833,38 +970,63 @@ public class Scraper
             }
         }
 
-        diagnostics.Add($"article-list selector '{site.FollowFirstLinkSelector}': {articleUrls.Count} unique link(s) found");
+        var articleLimit = string.Equals(site.Name, "Euro2Day", StringComparison.OrdinalIgnoreCase) ? 10 : int.MaxValue;
+        if (articleUrls.Count > articleLimit)
+        {
+            articleUrls = articleUrls.Take(articleLimit).ToList();
+            diagnostics.Add($"article-list selector '{articleLinkSelector}': limited to the {articleLimit} most recent link(s)");
+        }
+        else
+        {
+            diagnostics.Add($"article-list selector '{articleLinkSelector}': {articleUrls.Count} unique link(s) found");
+        }
         var cutoff = DateTimeOffset.UtcNow.Date.AddDays(-10);
-        var articleTexts = new List<string>();
+        var articles = new List<LinkedArticleContent>();
         var sitemapDates = await LoadSitemapDatesAsync(articleUrls.Select(article => article.Url));
 
         foreach (var article in articleUrls)
         {
+            IPage? articlePage = null;
             try
             {
                 var publishedAt = article.PublishedAt
                     ?? (sitemapDates.TryGetValue(article.Url, out var sitemapDate) ? (DateTimeOffset?)sitemapDate : null);
-                if (publishedAt is not null && publishedAt.Value.Date < cutoff)
+                if (!IsGreekSource(site) && publishedAt is not null && publishedAt.Value.Date < cutoff)
                 {
                     diagnostics.Add($"skipped article published {publishedAt.Value:yyyy-MM-dd}: {article.Url}");
                     continue;
                 }
 
-                // Go directly to the resolved URL. Some listings retain hidden duplicate
-                // links, and waiting for those to become clickable can consume an entire
-                // source timeout without ever opening the article.
-                await page.GotoAsync(article.Url, new()
+                // Use a separate tab so article navigation cannot replace the listing DOM
+                // that is still needed later for the source's own text and screenshots.
+                articlePage = await page.Context.NewPageAsync();
+                try
                 {
-                    WaitUntil = WaitUntilState.DOMContentLoaded,
-                    Timeout = site.Timeout,
-                });
-                await page.WaitForTimeoutAsync(1000);
+                    await articlePage.GotoAsync(article.Url, new()
+                    {
+                        WaitUntil = WaitUntilState.DOMContentLoaded,
+                        Timeout = ArticleNavigationTimeout(site),
+                    });
+                }
+                catch (Exception ex) when (
+                    string.Equals(site.Name, "Capital", StringComparison.OrdinalIgnoreCase) &&
+                    (ex is TimeoutException || ex.Message.Contains("net::ERR_HTTP2_PROTOCOL_ERROR", StringComparison.OrdinalIgnoreCase)))
+                {
+                    diagnostics.Add($"article navigation failed transiently; retrying once: {article.Url}");
+                    await articlePage.GotoAsync(article.Url, new()
+                    {
+                        WaitUntil = WaitUntilState.DOMContentLoaded,
+                        Timeout = ArticleNavigationTimeout(site),
+                    });
+                }
+                await articlePage.WaitForTimeoutAsync(1000);
                 diagnostics.Add($"opened article: {article.Url}");
 
-                publishedAt ??= await GetPublishedDateAsync(page);
+                var articlePagePublishedAt = await GetPublishedDateAsync(articlePage);
+                publishedAt = articlePagePublishedAt;
                 if (publishedAt is null)
                 {
-                    diagnostics.Add($"skipped article with no detectable publication date: {page.Url}");
+                    diagnostics.Add($"skipped article with no verified publication date: {articlePage.Url}");
                     continue;
                 }
 
@@ -874,10 +1036,10 @@ public class Scraper
                     continue;
                 }
 
-                await DismissOverlaysAsync(page);
+                await DismissOverlaysAsync(articlePage);
                 if (site.ExcludeSelectors.Length > 0)
                 {
-                    await page.EvaluateAsync<int>(
+                    await articlePage.EvaluateAsync<int>(
                         @"sels => {
                             let n = 0;
                             for (const s of sels) {
@@ -887,31 +1049,63 @@ public class Scraper
                         }",
                         site.ExcludeSelectors);
                 }
-                var text = await ExtractPageTextAsync(page, site.Selectors);
-                var title = await ExtractArticleTitleAsync(page);
-                if (IsGreekSource(site) && !IsGreekMarketArticle(title))
+                var text = await ExtractLinkedArticleTextAsync(articlePage, site.Selectors);
+                var title = await ExtractArticleTitleAsync(articlePage);
+
+                if (IsGreekSource(site) && !IsMorningView(site) && !IsGreekMarketArticle(title))
                 {
-                    diagnostics.Add($"skipped non-Greek-market article: {page.Url}");
+                    diagnostics.Add($"skipped non-domestic market article: {articlePage.Url}");
                     continue;
                 }
 
                 if (!string.IsNullOrWhiteSpace(text))
                 {
-                    articleTexts.Add($"Άρθρο ({publishedAt.Value:dd/MM/yyyy}) — {page.Url}\n{text}");
-                    diagnostics.Add($"read article published {publishedAt.Value:yyyy-MM-dd}: {page.Url}");
+                    var screenshots = await CaptureScreenshotsAsync(articlePage, site);
+                    if (string.Equals(site.Name, "Capital", StringComparison.OrdinalIgnoreCase) && articles.Count >= 2)
+                    {
+                        diagnostics.Add($"skipped older domestic market article after retaining the two newest: {articlePage.Url}");
+                        continue;
+                    }
+                    articles.Add(new LinkedArticleContent(
+                        $"Άρθρο ({publishedAt.Value:dd/MM/yyyy}) — {articlePage.Url}\n{text}",
+                        publishedAt.Value,
+                        screenshots));
+                    diagnostics.Add($"read article published {publishedAt.Value:yyyy-MM-dd}: {articlePage.Url}");
                 }
             }
             catch (Exception ex)
             {
                 diagnostics.Add($"skipped article after load/extraction failure ({ex.Message}): {article.Url}");
             }
+            finally
+            {
+                if (articlePage is not null)
+                    await articlePage.CloseAsync();
+            }
         }
 
-        return articleTexts;
+        return articles;
+    }
+
+    private sealed record LinkedArticleContent(string Text, DateTimeOffset PublishedAt, List<string> Screenshots);
+
+    private static bool IsArticleUrl(SiteConfig site, Uri url)
+    {
+        if (string.Equals(site.Name, "Insider", StringComparison.OrdinalIgnoreCase))
+            return System.Text.RegularExpressions.Regex.IsMatch(url.AbsolutePath, @"^/agores/\d+/");
+
+        if (string.Equals(site.Name, "Capital", StringComparison.OrdinalIgnoreCase))
+            return System.Text.RegularExpressions.Regex.IsMatch(url.AbsolutePath, @"^/agores/\d+/");
+
+        return true;
     }
 
     private static bool IsGreekSource(SiteConfig site) =>
         string.Equals(site.SourceRegion, "Greek", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMorningView(SiteConfig site) =>
+        Uri.TryCreate(site.Url, UriKind.Absolute, out var url) &&
+        url.Host.EndsWith("morningview.gr", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<string> ExtractArticleTitleAsync(IPage page)
     {
@@ -927,30 +1121,20 @@ public class Scraper
 
     private static bool IsGreekMarketArticle(string title)
     {
-        var normalizedTitle = title.ToUpperInvariant();
-        if (InternationalMarketTitleSignals.Any(signal => normalizedTitle.Contains(signal, StringComparison.Ordinal)))
-            return false;
-
+        var normalizedTitle = string.Concat(title
+            .Normalize(NormalizationForm.FormD)
+            .Where(character => CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.NonSpacingMark))
+            .ToUpperInvariant();
         return GreekMarketSignals.Any(signal => normalizedTitle.Contains(signal, StringComparison.Ordinal));
     }
 
-    // Greek publishers frequently place foreign-market stories beside domestic ones in
-    // the same "markets" feed. Require an explicit domestic-market signal before a Greek
-    // source article reaches the AI/report, so a Greek-language Wall Street or Asia story
-    // cannot be presented as news from the Greek market.
+    // Greek publishers mix domestic and foreign stories on the same markets feed. The
+    // article title must establish a Greek equity or banking-market context before it
+    // reaches the report; generic references to Greece and company-name lists are not enough.
     private static readonly string[] GreekMarketSignals =
     [
-        "ΧΡΗΜΑΤΙΣΤΗΡΙ", "ATHEX", "ΧΡΗΜΑΤΙΣΤΗΡΙΟ ΑΘΗΝΩΝ", "ΓΕΝΙΚΟΣ ΔΕΙΚΤΗΣ",
-        "FTSE/ATHEX", "ΤΡΑΠΕΖΑ ΤΗΣ ΕΛΛΑΔΟΣ", "ΕΛΛΗΝΙΚΕΣ ΤΡΑΠΕΖΕΣ",
-        "ALPHA BANK", "EUROBANK", "ΕΘΝΙΚΗ ΤΡΑΠΕΖΑ", "ΤΡΑΠΕΖΑ ΠΕΙΡΑΙΩΣ",
-        "ΔΕΗ", "ΟΤΕ", "ΟΠΑΠ", "ΜΥΤΙΛΗΝΑΙ", "METLEN", "ΓΕΚ ΤΕΡΝΑ",
-    ];
-
-    private static readonly string[] InternationalMarketTitleSignals =
-    [
-        "WALL STREET", "ΝΤΑΟΥ ΤΖΟΟΥΝΣ", "NASDAQ", "S&P 500", "ΑΣΙΑ",
-        "ΚΙΝΑ", "ΙΑΠΩΝ", "ΕΥΡΩΑΓΟΡ", "ΕΥΡΩΠΑΪΚΕΣ ΑΓΟΡΕΣ", "ΠΕΤΡΕΛΑΙ",
-        "ΧΡΥΣ", "BITCOIN", "ΚΡΥΠΤΟ", "ΣΙΔΗΡΟΜΕΤΑΛΛΕΥΜΑ", "KOSPI",
+        "ΧΡΗΜΑΤΙΣΤΗΡΙ", "ATHEX", "Χ.Α.", "ΓΕΝΙΚΟΣ ΔΕΙΚΤΗΣ", "FTSE/ATHEX",
+        "ΕΛΛΗΝΙΚΕΣ ΤΡΑΠΕΖ", "ΕΛΛΗΝΙΚΩΝ ΤΡΑΠΕΖ", "ΤΡΑΠΕΖΙΚ",
     ];
 
     private sealed class ListedArticle
@@ -998,6 +1182,9 @@ public class Scraper
                     .forEach(element => values.push(element.getAttribute('content') ?? ''));
                 document.querySelectorAll('[class*="date" i], [class*="publish" i], [data-testid*="date" i]')
                     .forEach(element => values.push(element.textContent ?? ''));
+                Array.from(document.querySelectorAll('body *'))
+                    .filter(element => element.children.length === 0 && /^\s*(?:Published\b|Week of\s+)/i.test(element.textContent ?? ''))
+                    .forEach(element => values.push(element.textContent ?? ''));
                 return values.filter(Boolean);
             }
             """);
@@ -1025,6 +1212,86 @@ public class Scraper
         catch
         {
             return [];
+        }
+    }
+
+    private static async Task<(string Text, DateTimeOffset? PublishedDate)?> TryGetMorningViewArticleAsync(List<string> diagnostics)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            using var response = await client.GetAsync("https://www.morningview.gr/backend/api/get-articles?tagId=&page=1");
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (!document.RootElement.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("articles", out var articles))
+                return null;
+
+            foreach (var article in articles.EnumerateArray())
+            {
+                var label = article.TryGetProperty("author", out var author) &&
+                    author.TryGetProperty("description", out var description)
+                    ? description.GetString()
+                    : null;
+                if (!string.Equals(label, "MARKET VIEW", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var title = article.TryGetProperty("title", out var titleElement) ? titleElement.GetString() : null;
+                var body = article.TryGetProperty("body", out var bodyElement) ? bodyElement.GetString() : null;
+                if (string.IsNullOrWhiteSpace(body)) return null;
+
+                var text = System.Net.WebUtility.HtmlDecode(Regex.Replace(body, "<[^>]+>", " "));
+                var date = article.TryGetProperty("releaseDate", out var dateElement)
+                    ? TryParsePublishedDate(dateElement.GetString() ?? "")
+                    : null;
+                diagnostics.Add("retrieved current MARKET VIEW article from Morning View's public feed");
+                return ($"{title}\n{text}", date);
+            }
+        }
+        catch (Exception ex)
+        {
+            diagnostics.Add($"Morning View public-feed fallback failed: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    private static async Task<(string Text, DateTimeOffset? PublishedDate)?> TryGetJpmorganWeeklyRecapAsync(IPage page, List<string> diagnostics)
+    {
+        try
+        {
+            var modelPath = await page.GetAttributeAsync("#weekly-market-recap", "data-comp-prop-url");
+            if (string.IsNullOrWhiteSpace(modelPath)) return null;
+
+            var modelUrl = new Uri(new Uri(page.Url), modelPath).GetLeftPart(UriPartial.Path);
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+            using var modelDocument = JsonDocument.Parse(await client.GetStringAsync(modelUrl));
+            if (!modelDocument.RootElement.TryGetProperty("wmrJson", out var recapJson)) return null;
+
+            using var recapDocument = JsonDocument.Parse(recapJson.GetString() ?? "");
+            if (!recapDocument.RootElement.TryGetProperty("WMI", out var recap)) return null;
+
+            var sections = new List<string>();
+            foreach (var name in new[] { "ThoughtOfTheWeek", "WeekInReview", "WeekAhead", "EconomicUpdate", "Equities", "Fixed Income", "Commodities", "Currencies", "Key Rates" })
+            {
+                if (recap.TryGetProperty(name, out var section) && section.ValueKind == JsonValueKind.String)
+                {
+                    var value = section.GetString();
+                    if (!string.IsNullOrWhiteSpace(value)) sections.Add($"{name}: {value}");
+                }
+            }
+
+            if (sections.Count == 0) return null;
+            var publishedDate = recap.TryGetProperty("AsOf", out var asOf)
+                ? TryParsePublishedDate(asOf.GetString() ?? "")
+                : null;
+            diagnostics.Add($"loaded JPMorgan weekly recap from model endpoint ({sections.Count} section(s))");
+            return (string.Join("\n\n", sections), publishedDate);
+        }
+        catch (Exception ex)
+        {
+            diagnostics.Add($"JPMorgan recap model fallback failed: {ex.Message}");
+            return null;
         }
     }
 
@@ -1058,7 +1325,15 @@ public class Scraper
     // dot separator (e.g. BNP Paribas' "27.07.2026" author byline) — DateTimeOffset.TryParse
     // with invariant culture rejects these outright since '.' isn't a recognized date
     // separator for it, so they need an explicit ParseExact fallback.
-    private static readonly string[] ExplicitDateFormats = ["dd.MM.yyyy", "d.M.yyyy", "dd-MM-yyyy", "d-M-yyyy"];
+    private static readonly string[] ExplicitDateFormats =
+    [
+        "dd.MM.yyyy", "d.M.yyyy", "dd-MM-yyyy", "d-M-yyyy",
+        "MMM d, yyyy", "MMM. d, yyyy", "MMMM d, yyyy"
+    ];
+
+    private static readonly Regex TextualDatePattern = new(
+        @"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},\s+\d{4}\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static DateTimeOffset? TryParsePublishedDate(string candidate)
     {
@@ -1067,8 +1342,15 @@ public class Scraper
             return publishedAt;
 
         var trimmed = candidate.Trim().TrimStart('|').Trim();
-        return DateTimeOffset.TryParseExact(trimmed, ExplicitDateFormats, CultureInfo.InvariantCulture,
+        if (DateTimeOffset.TryParseExact(trimmed, ExplicitDateFormats, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces, out var exact)
+            )
+            return exact;
+
+        var textualDate = TextualDatePattern.Match(trimmed);
+        return textualDate.Success && DateTimeOffset.TryParseExact(textualDate.Value, ExplicitDateFormats,
+            CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AllowWhiteSpaces,
+            out exact)
             ? exact
             : null;
     }
@@ -1096,6 +1378,68 @@ public class Scraper
 
         return CleanText(parts.Count > 0 ? string.Join("\n", parts) : await page.InnerTextAsync("body"));
     }
+
+    private static async Task<string> ExtractLinkedArticleTextAsync(IPage page, IReadOnlyList<string> selectors)
+    {
+        if (page.Url.Contains("capital.gr/agores/", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var text = await page.EvaluateAsync<string>("""
+                    () => {
+                        const heading = document.querySelector('h1');
+                        if (!heading) return '';
+                        const paragraphs = Array.from(document.querySelectorAll('p'))
+                            .filter(paragraph => Boolean(heading.compareDocumentPosition(paragraph) & Node.DOCUMENT_POSITION_FOLLOWING))
+                            .map(paragraph => paragraph.textContent?.trim() ?? '')
+                            .filter(text => text.length > 30)
+                            .slice(0, 80);
+                        return [heading.textContent?.trim() ?? '', ...paragraphs].join('\n');
+                    }
+                    """);
+                if (CleanText(text).Length >= 300)
+                    return CleanText(text);
+            }
+            catch { }
+        }
+
+        // A listing source's configured selectors often deliberately include broad tags such
+        // as p/h2/h3. On a linked article those also match navigation and related-story cards.
+        // Prefer the page's semantic content container so the AI receives the article body.
+        foreach (var selector in selectors.Where(IsStructuralArticleSelector))
+        {
+            try
+            {
+                var element = page.Locator(selector).First;
+                var text = await element.InnerTextAsync(new() { Timeout = 1500 });
+                if (CleanText(text).Length >= 300)
+                    return CleanText(text);
+            }
+            catch { }
+        }
+
+        foreach (var selector in new[] { "article", "main article", "[role='main'] article", "main" })
+        {
+            try
+            {
+                var element = page.Locator(selector).First;
+                var text = await element.InnerTextAsync(new() { Timeout = 1500 });
+                if (CleanText(text).Length >= 300)
+                    return CleanText(text);
+            }
+            catch { }
+        }
+
+        return await ExtractPageTextAsync(page, selectors);
+    }
+
+    private static bool IsStructuralArticleSelector(string selector) =>
+        !string.Equals(selector, "article", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(selector, "main", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(selector, "p", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(selector, "h1", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(selector, "h2", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(selector, "h3", StringComparison.OrdinalIgnoreCase);
 
     private static string CleanText(string text)
     {
@@ -1135,6 +1479,36 @@ public class Scraper
 
     private static async Task<string?> DismissOverlaysAsync(IPage page)
     {
+        // Quantcast's consent dialog on Insider wraps its controls in a custom container
+        // whose localized labels do not reliably match the generic text locators below.
+        // Prefer invoking its own consent button; remove only the modal if it remains and
+        // is still intercepting clicks, never any page/article content.
+        try
+        {
+            var quantcastOverlay = page.Locator("#qc-cmp2-container");
+            if (await quantcastOverlay.IsVisibleAsync(new() { Timeout = 500 }))
+            {
+                var acted = await page.EvaluateAsync<bool>("""
+                    () => {
+                        const overlay = document.querySelector('#qc-cmp2-container');
+                        if (!overlay) return false;
+                        const button = Array.from(overlay.querySelectorAll('button, [role="button"]'))
+                            .find(element => /reject|decline|necessary|απόρριψη|απαραίτητα/i.test(element.textContent ?? ''))
+                            ?? Array.from(overlay.querySelectorAll('button, [role="button"]'))
+                                .find(element => /accept|agree|allow|αποδοχή|συμφωνώ/i.test(element.textContent ?? ''));
+                        if (!button) return false;
+                        (button instanceof HTMLElement ? button : null)?.click();
+                        return true;
+                    }
+                    """);
+                await page.WaitForTimeoutAsync(500);
+                if (await quantcastOverlay.IsVisibleAsync(new() { Timeout = 500 }))
+                    await quantcastOverlay.EvaluateAsync("element => element.remove()");
+                return acted ? "Quantcast consent button" : "Quantcast overlay removed";
+            }
+        }
+        catch { }
+
         // Reject/decline controls are only matched against real <button>/role="button"
         // elements — NOT <a> links. Cookie-consent "reject" wording can coincidentally
         // match unrelated navigation links elsewhere on the page (e.g. a footer/legal
@@ -1205,7 +1579,7 @@ public class Scraper
         {
             try
             {
-                var buttons = page.Locator($"button:has-text('{text}'), a:has-text('{text}')");
+                var buttons = page.Locator($"button:has-text('{text}'), a:has-text('{text}'), [role='button']:has-text('{text}'), [aria-expanded]:has-text('{text}')");
                 var count = await buttons.CountAsync();
                 for (var i = 0; i < count; i++)
                 {
@@ -1215,6 +1589,17 @@ public class Scraper
                         if (await button.IsVisibleAsync(new() { Timeout = 500 }))
                         {
                             await ClickWithJsFallbackAsync(button);
+                            if (string.Equals(await button.EvaluateAsync<string>("el => el.tagName"), "A", StringComparison.OrdinalIgnoreCase))
+                            {
+                                try
+                                {
+                                    await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 5000 });
+                                }
+                                catch (TimeoutException)
+                                {
+                                    // A same-page link may update client-side without a load event.
+                                }
+                            }
                             await page.WaitForTimeoutAsync(400);
                             clicked.Add(text);
                         }
