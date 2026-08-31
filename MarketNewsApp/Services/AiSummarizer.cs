@@ -1,16 +1,18 @@
 using System.Text.RegularExpressions;
 using MarketNewsApp.Agents;
 using MarketNewsApp.Models;
+using Polly;
+using Polly.Retry;
 
 namespace MarketNewsApp.Services;
 
 public class AiSummarizer : IAsyncDisposable
 {
     private const string SummaryPromptVersion = "source-only-v4-retry-ai-failures";
-    private const int OpenAiTranslationSourceCharacters = 6000;
+    private const int OpenAiTranslationChunkCharacters = 6000;
 
     // Provider selection/implementation now lives under Agents/ (one file per
-    // provider: CopilotChatAgent, GroqChatAgent, AzureOpenAiChatAgent) behind
+    // provider: CopilotChatAgent, AzureOpenAiChatAgent, OpenAiChatAgent) behind
     // the shared IChatAgent contract — AiSummarizer just talks to whichever
     // one ChatAgentFactory picks. Settings come from an IAgentSettingsProvider
     // (env vars by default) so a future DB-backed provider can be swapped in
@@ -56,7 +58,8 @@ public class AiSummarizer : IAsyncDisposable
     // an AI call.
     public async Task<Dictionary<string, SourceSummary>> SummarizePerSourceAsync(
         Dictionary<string, ScrapedSite> sites,
-        Dictionary<string, SummaryCache.SourceEntry>? previousCache = null)
+        Dictionary<string, SummaryCache.SourceEntry>? previousCache = null,
+        Func<string, SummaryCache.SourceEntry, Task>? onSourceCompleted = null)
     {
         Console.WriteLine($"  🤖  Using {ProviderName}...");
         var today = DateTime.Now.ToString("dd/MM/yyyy");
@@ -124,14 +127,17 @@ public class AiSummarizer : IAsyncDisposable
             // Some sources (e.g. JPMorgan) bury the real analysis well past the first
             // few thousand characters behind nav/chart-accessibility text; a small
             // truncation cut it off entirely before the model ever saw it.
-            var sourceContent = IsOpenAiProvider ? RemoveOpenAiBoilerplate(info.Text) : info.Text;
+            var sourceContent = PrepareSourceContent(info.Text, name);
             var textContent = sourceContent.Length > _configuration.Report.MaxSummarySourceCharacters ? sourceContent[.._configuration.Report.MaxSummarySourceCharacters] : sourceContent;
             var promptKey = string.Equals(info.SourceRegion, "Greek", StringComparison.OrdinalIgnoreCase) &&
                 _configuration.Prompts.ContainsKey("source-user-greek")
                 ? "source-user-greek"
                 : "source-user";
+            var greekArticleInstruction = string.Equals(info.SourceRegion, "Greek", StringComparison.OrdinalIgnoreCase)
+                ? " For each distinct scraped article marked 'Άρθρο (dd/MM/yyyy)', retain a separate concise subsection and state that exact publication date. Do not omit an article that directly concerns the Greek economy, Athens Exchange, Greek listed companies, or Greek banks."
+                : "";
             var userPrompt = FormatPrompt(promptKey, ("today", today), ("sinceDate", sinceDate), ("sourceName", name), ("sourceUrl", info.Url), ("content", textContent)) +
-                "\n\nIMPORTANT: Always produce an HTML summary from the supplied content. Ignore legal notices, jurisdiction restrictions, cookie text, privacy text, terms and conditions, and risk disclaimers when possible, but do not return a sentinel value or refuse to summarize.";
+                "\n\nIMPORTANT: Always produce a detailed HTML summary from the supplied content. Cover every distinct market, investment, company, sector, macroeconomic, and policy topic that has material information, retaining the relevant figures, percentages, dates, and stated views. Do not turn it into a full translation, but do not omit a substantive topic merely to keep the summary short. Ignore legal notices, jurisdiction restrictions, cookie text, privacy text, terms and conditions, and risk disclaimers when possible, but do not return a sentinel value or refuse to summarize." + greekArticleInstruction;
 
             await aiSemaphore.WaitAsync();
             try
@@ -172,24 +178,58 @@ public class AiSummarizer : IAsyncDisposable
             {
                 aiSemaphore.Release();
             }
+
+            if (onSourceCompleted is not null)
+            {
+                await onSourceCompleted(name, new SummaryCache.SourceEntry(
+                    contentHash,
+                    sections[idx] ?? "",
+                    statuses[idx],
+                    translations[idx]));
+            }
         });
         await Task.WhenAll(siteTasks);
 
         var result = new Dictionary<string, SourceSummary>(siteList.Count);
         for (int i = 0; i < siteList.Count; i++)
+        {
+            var info = siteList[i].Value;
             result[siteList[i].Key] = new SourceSummary(
                 sections[i] ?? "",
                 statuses[i],
-                siteList[i].Value.Url,
-                siteList[i].Value.SourceRegion,
-                siteList[i].Value.Screenshots,
+                info.Url,
+                info.SourceRegion,
+                info.Screenshots,
                 translations[i] ?? "Η μετάφραση του scraped περιεχομένου δεν ήταν διαθέσιμη αυτή τη στιγμή.",
-                siteList[i].Value.Diagnostics,
-                siteList[i].Value.PublishedDate,
-                siteList[i].Value.PublishedDates);
+                info.Diagnostics,
+                info.PublishedDate,
+                PublishedDatesIncludedInSummary(info));
+        }
 
         PrintStatusSummary(result);
         return result;
+    }
+
+    private IReadOnlyList<DateTimeOffset> PublishedDatesIncludedInSummary(ScrapedSite site)
+    {
+        if (site.PublishedDates.Count == 0)
+            return [];
+
+        var sourceContent = RemoveLegalBoilerplate(site.Text);
+        var contentUsedForSummary = sourceContent.Length > _configuration.Report.MaxSummarySourceCharacters
+            ? sourceContent[.._configuration.Report.MaxSummarySourceCharacters]
+            : sourceContent;
+        var includedDates = Regex.Matches(contentUsedForSummary, @"Άρθρο \((?<date>\d{2}/\d{2}/\d{4})\)")
+            .Select(match => DateTimeOffset.TryParseExact(match.Groups["date"].Value, "dd/MM/yyyy",
+                System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal,
+                out var date) ? (DateTimeOffset?)date : null)
+            .Where(date => date is not null)
+            .Select(date => date!.Value)
+            .Distinct()
+            .OrderByDescending(date => date)
+            .ToList();
+
+        return includedDates;
     }
 
     private async Task<string> TranslateScrapedContentAsync(string scrapedContent, string sourceName)
@@ -199,20 +239,24 @@ public class AiSummarizer : IAsyncDisposable
 
         try
         {
-            var sourceContent = IsOpenAiProvider ? RemoveOpenAiBoilerplate(scrapedContent) : scrapedContent;
-            var maxCharacters = IsOpenAiProvider
-                ? Math.Min(_configuration.Report.MaxTranslationSourceCharacters, OpenAiTranslationSourceCharacters)
-                : _configuration.Report.MaxTranslationSourceCharacters;
+            var sourceContent = PrepareSourceContent(scrapedContent, sourceName);
+            var maxCharacters = _configuration.Report.MaxTranslationSourceCharacters;
             var content = sourceContent.Length > maxCharacters ? sourceContent[..maxCharacters] : sourceContent;
-            var prompt = FormatPrompt("translation", ("sourceName", sourceName), ("content", content));
-            if (IsOpenAiProvider)
+            var chunks = IsOpenAiProvider ? SplitTranslationContent(content, OpenAiTranslationChunkCharacters) : [content];
+            var translations = new List<string>(chunks.Count);
+            foreach (var chunk in chunks)
             {
-                prompt += "\n\nΑπόδωσε μόνο την οικονομική και επενδυτική ανάλυση. Παράλειψε " +
-                    "νομικούς όρους, cookie/privacy κείμενα, στοιχεία επικοινωνίας και κάθε " +
-                    "μη χρηματοοικονομικό ή ευαίσθητο περιεχόμενο.";
+                var prompt = FormatPrompt("translation", ("sourceName", sourceName), ("content", chunk));
+                if (IsOpenAiProvider)
+                {
+                    prompt += "\n\nΑπόδωσε μόνο την οικονομική και επενδυτική ανάλυση. Παράλειψε " +
+                        "νομικούς όρους, cookie/privacy κείμενα, στοιχεία επικοινωνίας και κάθε " +
+                        "μη χρηματοοικονομικό ή ευαίσθητο περιεχόμενο.";
+                }
+                var translation = await ChatAsync([new("user", prompt)], maxTokens: 7500, temperature: 0.1);
+                translations.Add(StripCodeFences(translation).Trim());
             }
-            var translation = await ChatAsync([new("user", prompt)], maxTokens: 7500, temperature: 0.1);
-            return StripCodeFences(translation).Trim();
+            return string.Join("\n\n", translations);
         }
         catch (Exception ex)
         {
@@ -223,7 +267,29 @@ public class AiSummarizer : IAsyncDisposable
 
     private bool IsOpenAiProvider => _agent.ProviderName.StartsWith("OpenAI", StringComparison.Ordinal);
 
-    private static string RemoveOpenAiBoilerplate(string scrapedContent)
+    private static List<string> SplitTranslationContent(string content, int maximumChunkLength)
+    {
+        var chunks = new List<string>();
+        for (var start = 0; start < content.Length;)
+        {
+            var length = Math.Min(maximumChunkLength, content.Length - start);
+            if (start + length < content.Length)
+            {
+                var split = content.LastIndexOf('\n', start + length - 1, length);
+                if (split <= start)
+                    split = content.LastIndexOf(' ', start + length - 1, length);
+                if (split > start)
+                    length = split - start;
+            }
+            chunks.Add(content.Substring(start, length).Trim());
+            start += length;
+            while (start < content.Length && char.IsWhiteSpace(content[start]))
+                start++;
+        }
+        return chunks;
+    }
+
+    private static string RemoveLegalBoilerplate(string scrapedContent)
     {
         var boilerplateMarkers = new[]
         {
@@ -232,12 +298,30 @@ public class AiSummarizer : IAsyncDisposable
             "investment advice", "past performance", "all rights reserved"
         };
 
-        // Azure evaluates the complete input before the prompt can ask it to ignore a
-        // disclaimer. Remove common scraped legal boilerplate only on the OpenAI route.
+        // Legal copy is not market analysis. Removing it before every provider sees the
+        // source prevents institutional disclaimers from overwhelming a valid article and
+        // causing a refusal/disclaimer-only response.
         var financialLines = scrapedContent.Split('\n')
             .Where(line => !boilerplateMarkers.Any(marker => line.Contains(marker, StringComparison.OrdinalIgnoreCase)))
             .ToArray();
         return financialLines.Length == 0 ? scrapedContent : string.Join('\n', financialLines);
+    }
+
+    private static string PrepareSourceContent(string scrapedContent, string sourceName)
+    {
+        var content = RemoveLegalBoilerplate(scrapedContent);
+        if (!string.Equals(sourceName, "JPMorgan Weekly Market Recap", StringComparison.OrdinalIgnoreCase))
+            return content;
+
+        // JPMorgan emits chart alt text as multi-thousand-character lines. Those lines are
+        // source/legal metadata rather than the recap, and can make OpenAI return only a
+        // disclaimer before it reaches the actual analysis that follows.
+        var analysisLines = content.Split('\n')
+            .Where(line => !line.Contains("Source:", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var analysis = analysisLines.Length == 0 ? content : string.Join('\n', analysisLines);
+        var appendixStart = analysis.IndexOf("Abbreviations:", StringComparison.OrdinalIgnoreCase);
+        return appendixStart > 0 ? analysis[..appendixStart].TrimEnd() : analysis;
     }
 
     // Content thresholds for status classification
@@ -291,29 +375,33 @@ public class AiSummarizer : IAsyncDisposable
     private async Task<string> SummarizeWithRetriesAsync(string name, string systemPrompt, string userPrompt)
     {
         const int maxAttempts = 3;
-        var html = "";
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        var attempt = 0;
+        var retryPipeline = new ResiliencePipelineBuilder<string>()
+            .AddRetry(new RetryStrategyOptions<string>
+            {
+                MaxRetryAttempts = maxAttempts - 1,
+                Delay = TimeSpan.Zero,
+                ShouldHandle = new PredicateBuilder<string>()
+                    .Handle<Exception>()
+                    .HandleResult(html => string.IsNullOrWhiteSpace(html) || IsNoContentSentinel(html)),
+            })
+            .Build();
+
+        return await retryPipeline.ExecuteAsync(async _ =>
         {
+            attempt++;
             var prompt = attempt == 1
                 ? userPrompt
                 : userPrompt + $"\n\nYour previous reply was rejected because it did not contain a real HTML summary. Attempt {attempt}/{maxAttempts}: you MUST summarize the market/investment content that is present, even if brief. Do not reply with NO_CONTENT, an apology, or a refusal.";
-            try
-            {
-                html = StripLeadingPreamble(StripCodeFences(await ChatAsync(
-                    [new("system", systemPrompt), new("user", prompt)],
-                    maxTokens: 3500, temperature: 0.1)));
-            }
-            catch when (attempt < maxAttempts)
-            {
-                continue;
-            }
+            var html = StripLeadingPreamble(StripCodeFences(await ChatAsync(
+                [new("system", systemPrompt), new("user", prompt)],
+                maxTokens: 5000, temperature: 0.1)));
 
-            if (!string.IsNullOrWhiteSpace(html) && !IsNoContentSentinel(html))
-                return html;
+            if (string.IsNullOrWhiteSpace(html) || IsNoContentSentinel(html))
+                Console.WriteLine($"     ⏳  {name} — attempt {attempt}/{maxAttempts} produced no usable summary, retrying...");
 
-            Console.WriteLine($"     ⏳  {name} — attempt {attempt}/{maxAttempts} produced no usable summary, retrying...");
-        }
-        return html;
+            return html;
+        });
     }
 
     // The model occasionally still replies with the literal NO_CONTENT sentinel as
@@ -501,6 +589,11 @@ public class AiSummarizer : IAsyncDisposable
 
         var headingPattern = new Regex(@"<h2(?:\s[^>]*)?>.*?</h2>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         var sourceTagPattern = new Regex(@"<p\s+class=""source-tag""[^>]*>.*?</p>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (!headingPattern.IsMatch(html))
+        {
+            return $"<div class=\"section\">{title}{sourceTag}{html}</div>";
+        }
+
         var section = headingPattern.Replace(html, title, count: 1);
         section = sourceTagPattern.IsMatch(section)
             ? sourceTagPattern.Replace(section, sourceTag, count: 1)

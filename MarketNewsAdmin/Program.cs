@@ -15,6 +15,9 @@ if (string.IsNullOrWhiteSpace(sqliteConnectionString))
 builder.Services.AddDbContextFactory<MarketNewsDbContext>(options => options.UseSqlite(sqliteConnectionString));
 builder.Services.AddScoped<AdminConfigurationService>();
 builder.Services.AddScoped<DashboardService>();
+builder.Services.AddScoped<PipelineActivityService>();
+builder.Services.AddScoped<ReportArchiveService>();
+builder.Services.AddSingleton<PipelineRunnerService>();
 builder.Services.AddControllersWithViews();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(options =>
@@ -39,5 +42,12 @@ app.UseStaticFiles();
 app.UseRouting();
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapGet("/health", async (IDbContextFactory<MarketNewsDbContext> factory, CancellationToken cancellationToken) =>
+{
+    await using var db = await factory.CreateDbContextAsync(cancellationToken);
+    return await db.Database.CanConnectAsync(cancellationToken)
+        ? Results.Ok(new { status = "healthy" })
+        : Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable, title: "Database unavailable");
+});
 app.MapControllerRoute("default", "{controller=Dashboard}/{action=Index}/{id?}");
 app.Run();

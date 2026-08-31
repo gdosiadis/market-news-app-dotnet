@@ -42,6 +42,7 @@ public static class AuditLogger
         bool ScrapeIsOk,
         string ScrapeDiagnostics,
         string AiStatus,
+        string SynthesisStatus,
         bool? ChangedSincePreviousDay);
 
     /// <param name="rawScraped">Pre-clean scraped data (or the cached dict, when fromCache is true).</param>
@@ -52,12 +53,14 @@ public static class AuditLogger
         Dictionary<string, ScrapedSite> rawScraped,
         Dictionary<string, ScrapedSite> cleaned,
         Dictionary<string, SourceSummary>? perSource,
-        bool fromCache)
+        bool fromCache,
+        string? runId = null,
+        string synthesisStatus = "NotRun")
     {
         try
         {
             Directory.CreateDirectory(LogsDir);
-            var runId = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            runId ??= DateTime.Now.ToString("yyyyMMdd-HHmmss");
             var today = DateTime.Now.ToString("yyyy-MM-dd");
             var lastHashes = LoadLastHashes();
             var records = new List<AuditRecord>();
@@ -79,7 +82,7 @@ public static class AuditLogger
                 records.Add(new AuditRecord(
                     runId, DateTime.Now.ToString("O"), name, cleanedSite.Url, fromCache,
                     rawLen, cleanedSite.Text.Length, hash,
-                    cleanedSite.IsOk, cleanedSite.Diagnostics, aiStatus, changed));
+                    cleanedSite.IsOk, cleanedSite.Diagnostics, aiStatus, synthesisStatus, changed));
             }
 
             using (var writer = new StreamWriter(AuditLogFile, append: true))

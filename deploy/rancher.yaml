@@ -16,6 +16,42 @@ spec:
       storage: 2Gi
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-news-logs
+  namespace: market-news
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-news-reports
+  namespace: market-news
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-news-backups
+  namespace: market-news
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
 kind: Secret
 metadata:
   name: market-news-secrets
@@ -52,19 +88,67 @@ spec:
           env:
             - name: SQLITE_CONNECTION_STRING
               value: Data Source=/data/market-news.db
+            - name: PipelineLogs__Path
+              value: /app/pipeline/logs/audit.jsonl
+            - name: ReportArchive__Path
+              value: /reports
+            - name: AI_PROVIDER
+              value: openai
+            - name: GMAIL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: market-news-secrets
+                  key: GMAIL_USER
+            - name: GMAIL_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: market-news-secrets
+                  key: GMAIL_APP_PASSWORD
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: market-news-secrets
+                  key: OPENAI_API_KEY
+            - name: OPENAI_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: market-news-secrets
+                  key: OPENAI_ENDPOINT
+            - name: OPENAI_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: market-news-secrets
+                  key: OPENAI_MODEL
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: logs
+              mountPath: /app/pipeline/logs
+            - name: reports
+              mountPath: /reports
+              readOnly: true
           readinessProbe:
             httpGet:
-              path: /account/login
+              path: /health
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: market-news-data
+        - name: logs
+          persistentVolumeClaim:
+            claimName: market-news-logs
+        - name: reports
+          persistentVolumeClaim:
+            claimName: market-news-reports
 ---
 apiVersion: v1
 kind: Service
@@ -129,10 +213,31 @@ spec:
                     secretKeyRef:
                       name: market-news-secrets
                       key: OPENAI_MODEL
+                - name: REPORT_ARCHIVE_PATH
+                  value: /reports
+                - name: BACKUP_PATH
+                  value: /backups
+                - name: RETENTION_DAYS
+                  value: "30"
               volumeMounts:
                 - name: data
                   mountPath: /data
+                - name: logs
+                  mountPath: /app/logs
+                - name: reports
+                  mountPath: /reports
+                - name: backups
+                  mountPath: /backups
           volumes:
             - name: data
               persistentVolumeClaim:
                 claimName: market-news-data
+            - name: logs
+              persistentVolumeClaim:
+                claimName: market-news-logs
+            - name: reports
+              persistentVolumeClaim:
+                claimName: market-news-reports
+            - name: backups
+              persistentVolumeClaim:
+                claimName: market-news-backups

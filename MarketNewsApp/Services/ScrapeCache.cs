@@ -61,6 +61,14 @@ public static class ScrapeCache
         }
     }
 
+    public static void ClearToday()
+    {
+        if (File.Exists(TodayFile))
+            File.Delete(TodayFile);
+        if (Directory.Exists(TodayCompressedDir))
+            Directory.Delete(TodayCompressedDir, recursive: true);
+    }
+
     private static void SaveCompressedArchives(Dictionary<string, ScrapedSite> scraped)
     {
         try

@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Market News AI — Architecture</title>
+<style>
+  :root{
+    --plum:#5b2a54;
+    --plum-2:#7a3a72;
+    --orange:#f28c28;
+    --orange-soft:#fbe6cf;
+    --ink:#2b2330;
+    --muted:#6b5f70;
+    --line:#e7dce6;
+    --bg-soft:#faf6fb;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;
+    color:var(--ink);
+    font-size:12.5px;
+    line-height:1.5;
+  }
+  .page{
+    padding:44px 52px;
+    page-break-after:always;
+    position:relative;
+    min-height:100vh;
+  }
+  .page:last-child{page-break-after:auto;}
+
+  /* Cover */
+  .cover{
+    background:linear-gradient(135deg,var(--plum) 0%,var(--plum-2) 55%,#8a4a80 100%);
+    color:#fff;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    min-height:100vh;
+  }
+  .cover .kicker{
+    letter-spacing:.28em;
+    text-transform:uppercase;
+    font-size:12px;
+    color:var(--orange-soft);
+    margin-bottom:18px;
+  }
+  .cover h1{
+    font-size:52px;
+    line-height:1.05;
+    margin:0 0 14px;
+    font-weight:800;
+  }
+  .cover h1 span{color:var(--orange);}
+  .cover p{
+    font-size:16px;
+    max-width:560px;
+    color:#f2e7f0;
+    margin:6px 0 0;
+  }
+  .cover .pills{margin-top:34px;display:flex;gap:10px;flex-wrap:wrap;}
+  .pill{
+    background:rgba(255,255,255,.14);
+    border:1px solid rgba(255,255,255,.28);
+    border-radius:999px;
+    padding:7px 16px;
+    font-size:12.5px;
+    font-weight:600;
+  }
+  .cover .foot{
+    position:absolute;bottom:40px;left:52px;right:52px;
+    display:flex;justify-content:space-between;
+    font-size:11.5px;color:#e3d3e0;
+    border-top:1px solid rgba(255,255,255,.2);
+    padding-top:14px;
+  }
+
+  h2.section{
+    font-size:22px;
+    color:var(--plum);
+    margin:0 0 4px;
+    font-weight:800;
+  }
+  .section-num{
+    color:var(--orange);
+    font-weight:800;
+  }
+  .lead{color:var(--muted);margin:0 0 20px;font-size:12.5px;}
+  h3{
+    font-size:14px;
+    color:var(--plum-2);
+    margin:22px 0 8px;
+    border-left:4px solid var(--orange);
+    padding-left:10px;
+  }
+
+  table{
+    width:100%;
+    border-collapse:collapse;
+    margin:8px 0 6px;
+    font-size:11.5px;
+  }
+  th{
+    text-align:left;
+    background:var(--plum);
+    color:#fff;
+    padding:8px 10px;
+    font-weight:600;
+  }
+  th:first-child{border-top-left-radius:7px;}
+  th:last-child{border-top-right-radius:7px;}
+  td{
+    padding:7px 10px;
+    border-bottom:1px solid var(--line);
+    vertical-align:top;
+  }
+  tr:nth-child(even) td{background:var(--bg-soft);}
+  code{
+    background:var(--orange-soft);
+    color:#8a4a10;
+    padding:1px 6px;
+    border-radius:5px;
+    font-family:"Cascadia Code",Consolas,monospace;
+    font-size:11px;
+  }
+  td code{white-space:nowrap;}
+
+  .callout{
+    background:var(--bg-soft);
+    border:1px solid var(--line);
+    border-left:5px solid var(--orange);
+    border-radius:8px;
+    padding:14px 18px;
+    margin-top:18px;
+  }
+  .callout b{color:var(--plum);}
+
+  .pagenum{
+    position:absolute;bottom:20px;right:52px;
+    font-size:10.5px;color:var(--muted);
+  }
+  .tag{
+    position:absolute;top:20px;right:52px;
+    font-size:10.5px;color:var(--muted);
+    letter-spacing:.12em;text-transform:uppercase;
+  }
+
+  /* Diagram */
+  .diagram{margin:10px auto;display:block;}
+  .flow-note{color:var(--muted);font-size:11.5px;text-align:center;margin-top:6px;}
+</style>
+</head>
+<body>
+
+<!-- COVER -->
+<section class="page cover">
+  <div class="kicker">Codebase Walkthrough</div>
+  <h1>Market&nbsp;News&nbsp;<span>AI</span><br>Architecture Guide</h1>
+  <p>A file-by-file tour of the .NET daily market-summary pipeline and its admin portal — so nothing stays a black box.</p>
+  <div class="pills">
+    <span class="pill">.NET 8 · C#</span>
+    <span class="pill">Playwright scraping</span>
+    <span class="pill">Pluggable AI agents</span>
+    <span class="pill">ASP.NET admin portal</span>
+    <span class="pill">SQLite · EF Core</span>
+    <span class="pill">Docker</span>
+  </div>
+  <div class="foot">
+    <span>market-news-app-dotnet</span>
+    <span>Generated 27 Aug 2026</span>
+  </div>
+</section>
+
+<!-- SECTION 1: BIG PICTURE -->
+<section class="page">
+  <span class="tag">Overview</span>
+  <h2 class="section"><span class="section-num">01</span> &nbsp;The Big Picture</h2>
+  <p class="lead">Two apps share one SQLite database and one library layer.</p>
+
+  <table>
+    <tr><th>Component</th><th>Role</th></tr>
+    <tr><td><code>MarketNewsApp/</code></td><td>Console <b>pipeline</b> — scrape → clean → cache → summarize → email. Runs daily.</td></tr>
+    <tr><td><code>MarketNewsAdmin/</code></td><td>ASP.NET MVC <b>web portal</b> — configure the pipeline, view dashboards, browse archived reports.</td></tr>
+    <tr><td><code>MarketNewsApp.Tests/</code></td><td>Unit tests.</td></tr>
+  </table>
+
+  <h3>How data flows</h3>
+  <svg class="diagram" width="680" height="330" viewBox="0 0 680 330" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L7,3 L0,6 Z" fill="#7a3a72"/>
+      </marker>
+      <style>
+        .box{fill:#faf6fb;stroke:#7a3a72;stroke-width:1.5;rx:10;}
+        .boxo{fill:#fbe6cf;stroke:#f28c28;stroke-width:1.5;}
+        .db{fill:#5b2a54;}
+        .lbl{font:600 12px "Segoe UI",sans-serif;fill:#2b2330;}
+        .lblw{font:700 12px "Segoe UI",sans-serif;fill:#fff;}
+        .edge{stroke:#7a3a72;stroke-width:1.4;fill:none;marker-end:url(#arrow);}
+        .elbl{font:500 9.5px "Segoe UI",sans-serif;fill:#6b5f70;}
+      </style>
+    </defs>
+
+    <!-- Admin -->
+    <rect class="box" x="30" y="30" width="150" height="56" rx="10"/>
+    <text class="lbl" x="105" y="54" text-anchor="middle">MarketNewsAdmin</text>
+    <text class="elbl" x="105" y="70" text-anchor="middle">web portal</text>
+
+    <!-- DB -->
+    <rect class="db" x="265" y="30" width="150" height="56" rx="10"/>
+    <text class="lblw" x="340" y="54" text-anchor="middle">market-news.db</text>
+    <text x="340" y="70" text-anchor="middle" font-size="9.5" fill="#e3d3e0">SQLite (shared)</text>
+
+    <!-- Pipeline -->
+    <rect class="box" x="265" y="150" width="150" height="56" rx="10"/>
+    <text class="lbl" x="340" y="174" text-anchor="middle">MarketNewsApp</text>
+    <text class="elbl" x="340" y="190" text-anchor="middle">console pipeline</text>
+
+    <!-- Web sources -->
+    <rect class="boxo" x="30" y="150" width="150" height="56" rx="10"/>
+    <text class="lbl" x="105" y="182" text-anchor="middle">7 financial sites</text>
+
+    <!-- AI -->
+    <rect class="boxo" x="500" y="120" width="150" height="52" rx="10"/>
+    <text class="lbl" x="575" y="150" text-anchor="middle">AI providers</text>
+
+    <!-- Email -->
+    <rect class="boxo" x="500" y="200" width="150" height="52" rx="10"/>
+    <text class="lbl" x="575" y="230" text-anchor="middle">Gmail / Mailpit</text>
+
+    <!-- edges -->
+    <path class="edge" d="M180,58 L262,58"/>
+    <text class="elbl" x="221" y="50" text-anchor="middle">read/write config</text>
+
+    <path class="edge" d="M340,86 L340,147"/>
+    <text class="elbl" x="392" y="120" text-anchor="middle">reads config</text>
+
+    <path class="edge" d="M265,178 L183,178"/>
+    <text class="elbl" x="224" y="170" text-anchor="middle">Playwright</text>
+
+    <path class="edge" d="M415,168 L497,150"/>
+    <text class="elbl" x="470" y="150" text-anchor="middle">summarize</text>
+
+    <path class="edge" d="M415,190 L497,222"/>
+    <text class="elbl" x="470" y="212" text-anchor="middle">SMTP</text>
+
+    <path class="edge" d="M360,150 C380,120 360,100 350,88"/>
+    <text class="elbl" x="405" y="140" text-anchor="middle">writes runs</text>
+  </svg>
+
+  <div class="callout">
+    <b>One-sentence mental model:</b> the Admin portal writes config into SQLite, the pipeline reads that config to scrape 7 sites with Playwright, summarizes them via a pluggable AI agent, renders an email, and both apps run as Docker containers sharing one database.
+  </div>
+  <span class="pagenum">1</span>
+</section>
+
+<!-- SECTION 2: PIPELINE CORE -->
+<section class="page">
+  <span class="tag">MarketNewsApp</span>
+  <h2 class="section"><span class="section-num">02</span> &nbsp;Pipeline App — Entry &amp; Services</h2>
+  <p class="lead">The console app that does the daily work.</p>
+
+  <h3>Entry point &amp; config</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>Program.cs</code></td><td>Main entry. Parses CLI flags (<code>--now</code>, <code>--test</code>, <code>--source</code>, <code>--fresh</code>, <code>--debug-dom</code>), sets up Serilog, runs DB migrations, then drives the 5-step pipeline (<code>RunPipeline</code>). Holds the scheduler loop, checkpoint fallback, and failure-alert email.</td></tr>
+    <tr><td><code>MarketNewsApp.csproj</code></td><td>Project file — NuGet deps (Playwright, MailKit, EF Core, Serilog, Scriban).</td></tr>
+    <tr><td><code>README.md</code></td><td>Human docs: source list, setup, cache behavior.</td></tr>
+    <tr><td><code>Models/Models.cs</code></td><td>Core data shapes: <code>SiteConfig</code>, <code>ScrapedSite</code>, <code>SourceStatus</code> enum, summary types.</td></tr>
+  </table>
+
+  <h3>Services — the pipeline stages</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>Scraper.cs</code></td><td>Playwright automation. Loads each site, dismisses overlays, extracts text, and captures chart/table screenshots from the live page (ground truth, never AI-rendered).</td></tr>
+    <tr><td><code>AiSummarizer.cs</code></td><td>Per-source Greek AI summaries, then a synthesized overview. Handles transient-error retries.</td></tr>
+    <tr><td><code>EmailSender.cs</code></td><td>Renders the Scriban HTML template and sends via SMTP (MailKit). Also sends operational alerts.</td></tr>
+    <tr><td><code>ScrapeCache.cs</code></td><td>Caches same-day scrape results by content hash.</td></tr>
+    <tr><td><code>SummaryCache.cs</code></td><td>Same idea for AI summaries (per-source + final synthesis).</td></tr>
+    <tr><td><code>PipelineCheckpointStore.cs</code></td><td>Persists per-source checkpoints so a crashed run resumes instead of restarting.</td></tr>
+    <tr><td><code>ConfigurationService.cs</code></td><td>Loads <code>RuntimeConfiguration</code> (sources, schedule, email, flags) from SQLite.</td></tr>
+    <tr><td><code>ReportArchive.cs</code></td><td>Saves generated HTML reports for the admin portal.</td></tr>
+    <tr><td><code>AuditLogger.cs</code></td><td>Records audit-trail events.</td></tr>
+    <tr><td><code>ProductionMaintenance.cs</code></td><td>Startup housekeeping (DB pragmas, cleanup) before the pipeline.</td></tr>
+    <tr><td><code>SmtpResilience.cs</code></td><td>Retry/backoff for flaky SMTP sends.</td></tr>
+  </table>
+  <span class="pagenum">2</span>
+</section>
+
+<!-- SECTION 3: AGENTS + DATA -->
+<section class="page">
+  <span class="tag">MarketNewsApp</span>
+  <h2 class="section"><span class="section-num">03</span> &nbsp;AI Agents &amp; Data Layer</h2>
+  <p class="lead">Swappable AI providers, plus the EF Core database.</p>
+
+  <h3>Agents — pluggable AI providers</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>IChatAgent.cs</code></td><td>Interface every provider implements + <code>ChatMessage</code> record.</td></tr>
+    <tr><td><code>ChatAgentFactory.cs</code></td><td>Builds the right agent based on <code>AI_PROVIDER</code> (Copilot default).</td></tr>
+    <tr><td><code>CopilotChatAgent.cs</code></td><td>GitHub Copilot SDK provider (default).</td></tr>
+    <tr><td><code>AzureOpenAiChatAgent.cs</code></td><td>Azure OpenAI provider.</td></tr>
+    <tr><td><code>OpenAiChatAgent.cs</code></td><td>OpenAI provider.</td></tr>
+    <tr><td><code>GroqChatAgent.cs</code></td><td>Groq provider.</td></tr>
+    <tr><td><code>FailoverChatAgent.cs</code></td><td>Wraps two agents — falls back to a secondary if the primary fails.</td></tr>
+    <tr><td><code>OpenAiResilience.cs</code></td><td>Retry/backoff for OpenAI-style calls.</td></tr>
+    <tr><td><code>AgentSettings.cs</code></td><td>Config record (model, keys, endpoints) for an agent.</td></tr>
+    <tr><td><code>IAgentSettingsProvider.cs</code> · <code>EnvAgentSettingsProvider.cs</code> · <code>SqlAgentSettingsProvider.cs</code></td><td>Where agent settings come from — env vars or the SQLite config.</td></tr>
+  </table>
+
+  <h3>Data — database layer (EF Core)</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>MarketNewsDbContext.cs</code></td><td>EF Core context — defines all tables (config, checkpoints, runs, reports).</td></tr>
+    <tr><td><code>MarketNewsDbContextFactory.cs</code></td><td>Design-time factory so <code>dotnet ef</code> can create migrations.</td></tr>
+    <tr><td><code>ConfigurationEntities.cs</code></td><td>Entity classes for stored configuration.</td></tr>
+    <tr><td><code>ConfigurationSeed.cs</code></td><td>Seeds default sources/settings into a fresh DB.</td></tr>
+    <tr><td><code>Migrations/*.cs</code></td><td>Ordered schema history (source region, checkpoints, Greek source tuning). Each pair = migration + snapshot.</td></tr>
+    <tr><td><code>Templates/email_template.html</code></td><td>Scriban HTML template for the daily report; screenshots embedded as base64.</td></tr>
+  </table>
+  <span class="pagenum">3</span>
+</section>
+
+<!-- SECTION 4: ADMIN -->
+<section class="page">
+  <span class="tag">MarketNewsAdmin</span>
+  <h2 class="section"><span class="section-num">04</span> &nbsp;Admin Web Portal</h2>
+  <p class="lead">The ASP.NET MVC app for humans to run and observe the pipeline.</p>
+
+  <h3>Entry &amp; controllers</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>Program.cs</code></td><td>ASP.NET setup: DI, cookie auth (Administrator role), DB migration, <code>/health</code> endpoint, MVC routing (default → Dashboard).</td></tr>
+    <tr><td><code>appsettings*.json</code></td><td>Web app config (SQLite path, logging).</td></tr>
+    <tr><td><code>Controllers/DashboardController.cs</code></td><td>Landing dashboard (run stats, health).</td></tr>
+    <tr><td><code>Controllers/ManagementController.cs</code></td><td>Edit sources, schedule, email, AI settings; trigger runs.</td></tr>
+    <tr><td><code>Controllers/AccountController.cs</code></td><td>Login / logout / access-denied.</td></tr>
+    <tr><td><code>Controllers/HomeController.cs</code></td><td>Error page and misc routes.</td></tr>
+  </table>
+
+  <h3>Services &amp; views</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>AdminConfigurationService.cs</code></td><td>Reads/writes pipeline config in SQLite (admin side of <code>ConfigurationService</code>).</td></tr>
+    <tr><td><code>DashboardService.cs</code></td><td>Aggregates run/health data for the dashboard.</td></tr>
+    <tr><td><code>PipelineActivityService.cs</code></td><td>Reads pipeline run history / activity log.</td></tr>
+    <tr><td><code>PipelineRunnerService.cs</code></td><td>Launches the pipeline on demand (singleton — one run at a time).</td></tr>
+    <tr><td><code>ReportArchiveService.cs</code></td><td>Serves archived HTML reports.</td></tr>
+    <tr><td><code>Models/*.cs</code></td><td>View models passed from controllers to Razor views.</td></tr>
+    <tr><td><code>Views/</code> + <code>wwwroot/</code></td><td>Razor pages (Account, Dashboard, Management, Home, Shared) + static CSS/JS/images.</td></tr>
+  </table>
+  <span class="pagenum">4</span>
+</section>
+
+<!-- SECTION 5: TESTS + INFRA -->
+<section class="page">
+  <span class="tag">Infra &amp; Tests</span>
+  <h2 class="section"><span class="section-num">05</span> &nbsp;Tests, Deployment &amp; Artifacts</h2>
+  <p class="lead">Everything around the two apps.</p>
+
+  <h3>Tests</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>PipelineCheckpointStoreTests.cs</code></td><td>Unit tests for checkpoint save/resume logic.</td></tr>
+  </table>
+
+  <h3>Deployment &amp; infra (repo root)</h3>
+  <table>
+    <tr><th>File</th><th>What it does</th></tr>
+    <tr><td><code>compose.yaml</code></td><td>Docker Compose — runs pipeline + admin (+ Mailpit) locally.</td></tr>
+    <tr><td><code>Dockerfile.pipeline</code></td><td>Builds the console pipeline container image.</td></tr>
+    <tr><td><code>Dockerfile.admin</code></td><td>Builds the admin web container image.</td></tr>
+    <tr><td><code>deploy/rancher.yaml</code></td><td>Rancher/Kubernetes deployment manifest.</td></tr>
+    <tr><td><code>deploy/chart/</code></td><td>Helm chart for K8s deployment.</td></tr>
+    <tr><td><code>.dockerignore</code> · <code>.gitignore</code> · <code>.copilotignore</code></td><td>Exclusion rules for Docker, Git, and Copilot context.</td></tr>
+    <tr><td><code>.github/</code></td><td>Copilot instructions, skills, and per-language coding rules.</td></tr>
+  </table>
+
+  <h3>Generated / disposable (git-ignored)</h3>
+  <div class="callout">
+    <code>artifacts/</code>, <code>debug_shots/</code>, <code>logs/</code>, <code>cache/</code>, <code>reports/</code>, <code>mailpit-data/</code>, <code>report.html</code>, <code>synthesis_*.html</code>, <code>bin/</code>, <code>obj/</code> — none of these are source; they're build output or test artifacts you can safely delete.
+  </div>
+  <span class="pagenum">5</span>
+</section>
+
+</body>
+</html>

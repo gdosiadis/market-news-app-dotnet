@@ -1,0 +1,26 @@
+@model MarketNewsAdmin.Models.PipelineCheckpointsViewModel
+@{ ViewData["Title"] = "Pipeline checkpoints"; }
+<section class="panel">
+    <div class="panel-head"><div><span class="eyebrow">RESUME STATE</span><h2>Saved checkpoints</h2></div><div class="inline-actions"><span class="muted">Metadata only</span>@if (Model.Checkpoints.Any()) { <form asp-action="DeleteAllPipelineCheckpoints" method="post" data-confirm="Remove all checkpoints? The next pipeline run will start without resume state."><button class="button danger" type="submit"><i data-lucide="trash-2"></i>Delete all</button></form> }</div></div>
+    @if (!Model.Checkpoints.Any())
+    {
+        <p class="muted">No checkpoints have been saved.</p>
+    }
+    else
+    {
+        <div class="table-wrap"><table><thead><tr><th>Date</th><th>Run</th><th>Stage</th><th>Source</th><th>Content hash</th><th>Updated</th><th>Actions</th></tr></thead><tbody>
+        @foreach (var checkpoint in Model.Checkpoints)
+        {
+            <tr>
+                <td>@checkpoint.RunDate</td>
+                <td><code>@checkpoint.RunId</code></td>
+                <td><span class="status success">@checkpoint.Stage</span></td>
+                <td><strong>@checkpoint.SourceName</strong></td>
+                <td><code>@(checkpoint.ContentHash ?? "-")</code></td>
+                <td>@checkpoint.UpdatedAt.LocalDateTime.ToString("dd MMM yyyy, HH:mm")</td>
+                <td><form asp-action="DeletePipelineCheckpoint" method="post" data-confirm="Remove this checkpoint? The pipeline will not resume from it."><input type="hidden" name="runId" value="@checkpoint.RunId" /><input type="hidden" name="stage" value="@checkpoint.Stage" /><input type="hidden" name="sourceName" value="@checkpoint.SourceName" /><button class="icon-button danger" type="submit" aria-label="Remove checkpoint" title="Remove checkpoint"><i data-lucide="trash-2"></i></button></form></td>
+            </tr>
+        }
+        </tbody></table></div>
+    }
+</section>

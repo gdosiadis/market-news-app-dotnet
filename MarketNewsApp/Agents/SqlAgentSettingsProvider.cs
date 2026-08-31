@@ -10,7 +10,7 @@ public sealed class SqlAgentSettingsProvider(RuntimeConfiguration configuration)
         var secrets = await new EnvAgentSettingsProvider().GetSettingsAsync();
         return secrets with
         {
-            Provider = configuration.Agent.Provider,
+            Provider = secrets.Provider ?? configuration.Agent.Provider,
             CopilotModel = configuration.Agent.CopilotModel ?? secrets.CopilotModel,
             AzureEndpoint = configuration.Agent.AzureEndpoint,
             AzureDeployment = configuration.Agent.AzureDeployment,

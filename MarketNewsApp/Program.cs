@@ -8,23 +8,34 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Serilog;
 using Serilog.Context;
+using Serilog.Debugging;
 using Serilog.Formatting.Json;
 using Scriban;
 
-// Load .env file — search project directory first, then CWD
-var envFile = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".env");
-Env.Load(File.Exists(envFile) ? envFile : ".env");
+// Local runs load .env unless Production is explicitly selected. NoClobber keeps
+// deployment-injected secrets authoritative when an environment variable is present.
+if (!string.Equals(Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT"), "Production", StringComparison.OrdinalIgnoreCase))
+{
+    var envFile = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".env");
+    Env.NoClobber().Load(File.Exists(envFile) ? envFile : ".env");
+}
+
+SelfLog.Enable(Console.Error);
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
     .Enrich.FromLogContext()
     .Enrich.WithProperty("Application", "MarketNewsApp")
+    .Enrich.WithProperty("Environment", Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Production")
     .WriteTo.Console()
     .WriteTo.File(
         new JsonFormatter(),
         Path.Combine("logs", "market-news-.json"),
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 14,
+        fileSizeLimitBytes: 25 * 1024 * 1024,
+        rollOnFileSizeLimit: true,
+        retainedFileCountLimit: 11,
+        retainedFileTimeLimit: TimeSpan.FromDays(10),
         shared: true)
     .CreateLogger();
 
@@ -34,20 +45,24 @@ var dbOptions = new DbContextOptionsBuilder<MarketNewsDbContext>().UseSqlite(con
 var configurationService = new ConfigurationService(new PooledDbContextFactory<MarketNewsDbContext>(dbOptions));
 await using (var db = new MarketNewsDbContext(dbOptions))
     await db.Database.MigrateAsync();
+await ProductionMaintenance.RunAsync(dbOptions, connectionString);
+var checkpointStore = new PipelineCheckpointStore(dbOptions);
 
 var rootCommand = new RootCommand("Market News AI — Daily Email Report");
 
 var nowOption = new Option<bool>("--now", "Run once and exit");
 var testOption = new Option<bool>("--test", "Dry run — save HTML, no email");
 var sourceOption = new Option<string?>("--source", "Run only the named source and bypass same-day caches");
+var freshOption = new Option<bool>("--fresh", "Discard today's caches and checkpoints before running");
 var debugDomOption = new Option<string?>("--debug-dom", "Dump figure/chart element info for a URL and exit");
 
 rootCommand.AddOption(nowOption);
 rootCommand.AddOption(testOption);
 rootCommand.AddOption(sourceOption);
+rootCommand.AddOption(freshOption);
 rootCommand.AddOption(debugDomOption);
 
-rootCommand.SetHandler(async (bool now, bool test, string? sourceName, string? debugDomUrl) =>
+rootCommand.SetHandler(async (bool now, bool test, string? sourceName, bool fresh, string? debugDomUrl) =>
 {
     if (debugDomUrl is not null)
     {
@@ -62,6 +77,20 @@ rootCommand.SetHandler(async (bool now, bool test, string? sourceName, string? d
     }
 
     var configuration = configurationService.GetAsync().GetAwaiter().GetResult();
+    if (fresh)
+    {
+        if (!now && !test)
+        {
+            Console.WriteLine("--fresh requires --test or --now.");
+            return;
+        }
+
+        ScrapeCache.ClearToday();
+        SummaryCache.ClearToday();
+        await checkpointStore.DeleteForSourcesAsync(configuration.Sources.Select(source => source.Name));
+        Console.WriteLine("Fresh run enabled; today's caches and checkpoints were cleared.");
+    }
+
     if (!string.IsNullOrWhiteSpace(sourceName))
     {
         var matchingSources = configuration.Sources
@@ -81,18 +110,22 @@ rootCommand.SetHandler(async (bool now, bool test, string? sourceName, string? d
             ["summary-cache"] = false,
         };
         configuration = configuration with { Sources = matchingSources, Features = features };
+        await checkpointStore.DeleteForSourcesAsync(matchingSources.Select(source => source.Name));
         Console.WriteLine($"Testing only {matchingSources[0].Name}; same-day caches are bypassed.");
     }
 
     if (test)
     {
-        RunPipeline(configuration, dryRun: true);
+        RunPipeline(configuration, checkpointStore, dryRun: true);
         return;
     }
 
     if (now)
     {
-        RunPipeline(configuration, dryRun: false);
+        var staging = string.Equals(Environment.GetEnvironmentVariable("PIPELINE_MODE"), "staging", StringComparison.OrdinalIgnoreCase);
+        if (staging)
+            Console.WriteLine("Staging mode enabled — report will be generated but no email will be sent.");
+        RunPipeline(configuration, checkpointStore, dryRun: staging);
         return;
     }
 
@@ -109,12 +142,13 @@ rootCommand.SetHandler(async (bool now, bool test, string? sourceName, string? d
         var targetTime = TimeSpan.Parse(sendTime);
         if (configuration.Schedule.IsEnabled && now2.TimeOfDay.Hours == targetTime.Hours && now2.TimeOfDay.Minutes == targetTime.Minutes)
         {
-            RunPipeline(configuration);
+            var staging = string.Equals(Environment.GetEnvironmentVariable("PIPELINE_MODE"), "staging", StringComparison.OrdinalIgnoreCase);
+            RunPipeline(configuration, checkpointStore, dryRun: staging);
             Thread.Sleep(61000); // avoid re-trigger within the same minute
         }
         Thread.Sleep(30000);
     }
-}, nowOption, testOption, sourceOption, debugDomOption);
+}, nowOption, testOption, sourceOption, freshOption, debugDomOption);
 
 try
 {
@@ -179,7 +213,86 @@ static void Banner(string msg, char ch = '─')
 static void PrintElapsed(string label, Stopwatch stopwatch) =>
     Console.WriteLine($"  ⏱️  {label}: {stopwatch.Elapsed.TotalSeconds:F1}s ({stopwatch.Elapsed:mm\\:ss})");
 
-static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
+static bool HasNewerInformation(ScrapedSite freshSite, ScrapedSite previousSite)
+{
+    if (!freshSite.IsOk)
+        return false;
+
+    var freshDate = LatestPublishedDate(freshSite);
+    var previousDate = LatestPublishedDate(previousSite);
+    if (freshDate is not null && previousDate is not null)
+    {
+        if (freshDate > previousDate)
+            return true;
+        if (freshDate < previousDate)
+            return false;
+    }
+
+    return !string.Equals(freshSite.Text.Trim(), previousSite.Text.Trim(), StringComparison.Ordinal);
+}
+
+static DateTimeOffset? LatestPublishedDate(ScrapedSite site)
+{
+    var dates = site.PublishedDates.ToList();
+    if (site.PublishedDate is not null)
+        dates.Add(site.PublishedDate.Value);
+    return dates.Count == 0 ? null : dates.Max();
+}
+
+static ScrapedSite WithCheckpointFallback(ScrapedSite checkpoint, ScrapedSite freshSite) => new()
+{
+    Url = checkpoint.Url,
+    SourceRegion = checkpoint.SourceRegion,
+    Text = checkpoint.Text,
+    Diagnostics = $"{checkpoint.Diagnostics} | reused previous-day checkpoint because today's scrape had no newer information ({freshSite.Diagnostics})",
+    Screenshots = checkpoint.Screenshots,
+    PublishedDate = checkpoint.PublishedDate,
+    PublishedDates = checkpoint.PublishedDates,
+};
+
+static void SendPipelineAlert(
+    RuntimeConfiguration configuration,
+    Dictionary<string, ScrapedSite> cleaned,
+    Dictionary<string, SourceSummary> perSource,
+    string synthesisStatus,
+    string? synthesisError,
+    bool dryRun)
+{
+    if (dryRun)
+        return;
+
+    var issues = cleaned
+        .Where(source => !source.Value.IsOk)
+        .Select(source => $"<li><strong>{System.Net.WebUtility.HtmlEncode(source.Key)}</strong>: scrape failed - {System.Net.WebUtility.HtmlEncode(source.Value.Diagnostics)}</li>")
+        .ToList();
+    issues.AddRange(perSource
+        .Where(source => source.Value.Status is not (SourceStatus.Success or SourceStatus.Partial))
+        .Select(source => $"<li><strong>{System.Net.WebUtility.HtmlEncode(source.Key)}</strong>: AI summary {source.Value.Status}</li>"));
+
+    if (synthesisStatus == "Failed")
+        issues.Add($"<li><strong>Final synthesis</strong>: failed - {System.Net.WebUtility.HtmlEncode(synthesisError)}</li>");
+
+    if (issues.Count == 0)
+        return;
+
+    var recipients = configuration.Settings.TryGetValue("pipeline-alert-recipients", out var configuredRecipients)
+        ? configuredRecipients.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        : ["IDosiadis@optimabank.gr"];
+    try
+    {
+        new EmailSender(configuration.Email, configuration.ReportTemplate).SendOperationalAlert(
+            recipients,
+            $"Market News pipeline warning - {DateTime.Now:dd/MM/yyyy}",
+            $"<h2>Market News pipeline warning</h2><p>The report completed with one or more degraded stages.</p><ul>{string.Join(Environment.NewLine, issues)}</ul><p>Synthesis: {synthesisStatus}</p>");
+        Console.WriteLine($"  ⚠️  Pipeline alert sent to {string.Join(", ", recipients)}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  ⚠️  Pipeline alert could not be sent: {ex.Message}");
+    }
+}
+
+static void RunPipeline(RuntimeConfiguration configuration, PipelineCheckpointStore checkpointStore, bool dryRun = false)
 {
     var runId = Guid.NewGuid().ToString("N");
     using var runContext = LogContext.PushProperty("RunId", runId);
@@ -201,8 +314,28 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
     }
     else
     {
-        var scraper = new Scraper(configuration.Sources);
-        scraped = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
+        var resumed = checkpointStore.LoadScrapedAsync(configuration.Sources.Select(source => source.Name)).GetAwaiter().GetResult();
+        var pendingSources = configuration.Sources.Where(source => !resumed.ContainsKey(source.Name)).ToList();
+        if (resumed.Count > 0)
+            Console.WriteLine($"\n  ♻️  Resuming {resumed.Count} completed scrape checkpoint(s); {pendingSources.Count} source(s) remain");
+
+        if (pendingSources.Count > 0)
+        {
+            var scraper = new Scraper(pendingSources, (name, site) => checkpointStore.SaveScrapedAsync(runId, name, site));
+            var fresh = scraper.ScrapeAllAsync().GetAwaiter().GetResult();
+            var previousDay = checkpointStore.LoadPreviousDayScrapedAsync(fresh.Keys).GetAwaiter().GetResult();
+            foreach (var (name, site) in fresh) resumed[name] = site;
+            foreach (var (name, previousSite) in previousDay)
+            {
+                if (!fresh.TryGetValue(name, out var freshSite) || HasNewerInformation(freshSite, previousSite))
+                    continue;
+
+                resumed[name] = WithCheckpointFallback(previousSite, freshSite);
+                checkpointStore.SaveScrapedAsync(runId, name, resumed[name]).GetAwaiter().GetResult();
+                Console.WriteLine($"  ♻️  {name}: no newer information found; using previous-day scrape checkpoint");
+            }
+        }
+        scraped = resumed;
         Console.WriteLine($"\n  ✅  Scraped {scraped.Count} sites · {scraped.Values.Sum(v => v.Text.Length):N0} chars · {scraped.Values.Sum(v => v.Screenshots.Count)} screenshots");
         Log.Information("Scrape completed. Sources: {SourceCount}, Characters: {CharacterCount}, Screenshots: {ScreenshotCount}", scraped.Count, scraped.Values.Sum(v => v.Text.Length), scraped.Values.Sum(v => v.Screenshots.Count));
     }
@@ -213,7 +346,6 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
     stepTimer.Restart();
     var cleaned = AiSummarizer.CleanScraped(scraped);
     Console.WriteLine($"  ✅  {cleaned.Count} sites cleaned");
-    AuditLogger.LogRun(scraped, cleaned, perSource: null, fromCache);
     PrintElapsed("Step 2 cleaning", stepTimer);
 
     // ── Step 3/5: Cache ──────────────────────────────────────────────────────
@@ -226,6 +358,16 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
     Banner("Step 4/5 · Per-source AI summaries (parallel)");
     stepTimer.Restart();
     var summaryCache = configuration.Features.GetValueOrDefault("summary-cache") ? SummaryCache.Load() : null;
+    var resumedSummaries = checkpointStore.LoadSummariesAsync(cleaned).GetAwaiter().GetResult();
+    if (resumedSummaries.Count > 0)
+    {
+        var cachedEntries = summaryCache?.PerSource is null
+            ? new Dictionary<string, SummaryCache.SourceEntry>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, SummaryCache.SourceEntry>(summaryCache.PerSource, StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, entry) in resumedSummaries) cachedEntries[name] = entry;
+        summaryCache = new SummaryCache.CachedRun(cachedEntries, summaryCache?.CompositeHash ?? "", summaryCache?.Synthesis ?? "");
+        Console.WriteLine($"  ♻️  Resuming {resumedSummaries.Count} completed AI summary checkpoint(s)");
+    }
     if (summaryCache != null)
         Console.WriteLine($"  💾  Same-day summary cache found — reusing unchanged sources, thinking only about new content");
 
@@ -235,7 +377,10 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
         Dictionary<string, SourceSummary> perSource;
         try
         {
-            perSource = summarizer.SummarizePerSourceAsync(cleaned, summaryCache?.PerSource).GetAwaiter().GetResult();
+            perSource = summarizer.SummarizePerSourceAsync(
+                cleaned,
+                summaryCache?.PerSource,
+                (name, entry) => checkpointStore.SaveSummaryAsync(runId, name, entry.ContentHash, entry)).GetAwaiter().GetResult();
             Console.WriteLine($"  ✅  {perSource.Count} per-source summaries ready");
             PrintElapsed("Step 4 AI summaries", stepTimer);
         }
@@ -264,16 +409,33 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
         var compositeHash = SummaryCache.ComputeCompositeHash(newPerSourceCache.Values.Select(v => v.ContentHash));
 
         string synthesis;
-        if (summaryCache != null && summaryCache.CompositeHash == compositeHash && !string.IsNullOrWhiteSpace(summaryCache.Synthesis))
+        string synthesisStatus;
+        try
         {
-            synthesis = summaryCache.Synthesis;
-            Console.WriteLine("  ♻️  Synthesis reused from cache — no source content changed since last run today");
+            if (summaryCache != null && summaryCache.CompositeHash == compositeHash && !string.IsNullOrWhiteSpace(summaryCache.Synthesis))
+            {
+                synthesis = summaryCache.Synthesis;
+                synthesisStatus = "Cached";
+                Console.WriteLine("  ♻️  Synthesis reused from cache — no source content changed since last run today");
+            }
+            else
+            {
+                synthesis = summarizer.SynthesizeAsync(perSource).GetAwaiter().GetResult();
+                synthesisStatus = "Success";
+                Console.WriteLine("  ✅  Synthesis ready");
+            }
         }
-        else
+        catch (Exception ex)
         {
-            synthesis = summarizer.SynthesizeAsync(perSource).GetAwaiter().GetResult();
-            Console.WriteLine("  ✅  Synthesis ready");
+            synthesisStatus = "Failed";
+            AuditLogger.LogRun(scraped, cleaned, perSource, fromCache, runId, synthesisStatus);
+            SendPipelineAlert(configuration, cleaned, perSource, synthesisStatus, ex.Message, dryRun);
+            Console.WriteLine($"  ❌  Synthesis failed: {ex.Message}");
+            return;
         }
+
+        AuditLogger.LogRun(scraped, cleaned, perSource, fromCache, runId, synthesisStatus);
+        SendPipelineAlert(configuration, cleaned, perSource, synthesisStatus, null, dryRun);
 
         if (configuration.Features.GetValueOrDefault("summary-cache")) SummaryCache.Save(new SummaryCache.CachedRun(newPerSourceCache, compositeHash, synthesis));
 
@@ -287,7 +449,7 @@ static void RunPipeline(RuntimeConfiguration configuration, bool dryRun = false)
         if (dryRun)
         {
             var emailSender = new EmailSender(configuration.Email, configuration.ReportTemplate);
-            var html        = emailSender.RenderHtml(aiHtml, reportDateStr, sinceDateStr);
+            var html        = emailSender.RenderHtml(aiHtml, reportDateStr, sinceDateStr, perSource.Keys);
 
             // Local file preview can't resolve cid: references (that's an email-client
             // mechanism) — inline the same screenshot bytes as data URIs instead so

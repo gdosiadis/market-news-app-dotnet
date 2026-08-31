@@ -16,6 +16,11 @@ public class Scraper
     // Listing pages can contain many eligible articles within the report window.
     private static readonly TimeSpan PerSourceTimeout = TimeSpan.FromMinutes(5);
 
+    // Several publishers flag the simultaneous five-context burst from one IP as automation,
+    // while the exact same source succeeds in the single-source workflow. Keep production
+    // scraping serial so every site receives the same request pattern as that workflow.
+    private const int MaxConcurrentSources = 1;
+
     private const string UserAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -28,9 +33,12 @@ public class Scraper
 
     private readonly IReadOnlyList<SiteConfig> _sites;
 
-    public Scraper(IReadOnlyList<SiteConfig> sites)
+    private readonly Func<string, ScrapedSite, Task>? _onSourceCompleted;
+
+    public Scraper(IReadOnlyList<SiteConfig> sites, Func<string, ScrapedSite, Task>? onSourceCompleted = null)
     {
         _sites = sites;
+        _onSourceCompleted = onSourceCompleted;
     }
 
     // Test-only entry point used by `--debug-dom` to exercise the real screenshot capture
@@ -42,7 +50,7 @@ public class Scraper
     public async Task<Dictionary<string, ScrapedSite>> ScrapeAllAsync()
     {
         var results = new Dictionary<string, ScrapedSite>();
-        using var semaphore = new SemaphoreSlim(5);
+        using var semaphore = new SemaphoreSlim(MaxConcurrentSources);
 
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new()
@@ -63,7 +71,12 @@ public class Scraper
                 var scrapeTask = ScrapeSiteAsync(browser, site);
                 var completedTask = await Task.WhenAny(scrapeTask, Task.Delay(PerSourceTimeout));
                 if (completedTask == scrapeTask)
-                    return await scrapeTask;
+                {
+                    var completed = await scrapeTask;
+                    if (completed.Data.IsOk && _onSourceCompleted is not null)
+                        await _onSourceCompleted(completed.Name, completed.Data);
+                    return completed;
+                }
 
                 _ = scrapeTask.ContinueWith(task => _ = task.Exception, TaskContinuationOptions.OnlyOnFaulted);
                 return (site.Name, new ScrapedSite
@@ -185,6 +198,13 @@ public class Scraper
             // "Terms and Conditions" gate) — dismiss it so extraction reaches the actual article.
             var dismissed = await DismissOverlaysAsync(page);
             diag.Add(dismissed is null ? "no consent overlay detected" : $"dismissed overlay via '{dismissed}' button");
+
+            if (string.Equals(site.Name, "JPMorgan Weekly Market Recap", StringComparison.OrdinalIgnoreCase))
+            {
+                var jpmorganGate = await DismissJpmorganInstitutionalGateAsync(page);
+                if (jpmorganGate is not null)
+                    diag.Add(jpmorganGate);
+            }
 
             // Some sites truncate the real content behind a "Read more"-style toggle
             // (e.g. JPMorgan's weekly recap widget) — expand those before extraction so
@@ -362,7 +382,7 @@ public class Scraper
                 // Morning View serves an empty React shell to non-hydrated pages, while its
                 // own public feed contains the current article bodies and author labels.
                 // Select the stable MARKET VIEW label instead of relying on its changing slug.
-                if (cleanedText.Length < 300 && IsMorningView(site))
+                if (IsMorningView(site))
                 {
                     var marketView = await TryGetMorningViewArticleAsync(diag);
                     if (marketView is not null)
@@ -466,9 +486,13 @@ public class Scraper
         }
         catch (TimeoutException)
         {
-            diagnostics.Add($"initial navigation timed out after {timeout}ms; retrying once");
+            diagnostics.Add($"initial navigation timed out after {timeout}ms; retrying at commit stage");
             await page.WaitForTimeoutAsync(1000);
-            return await page.GotoAsync(site.Url, new() { WaitUntil = waitUntil, Timeout = timeout });
+            // A number of publishers keep DOMContentLoaded pending behind analytics or
+            // third-party resources even though the article DOM is usable. The scraper
+            // already waits for source content below, so do not fail this source on that
+            // unrelated browser lifecycle event a second time.
+            return await page.GotoAsync(site.Url, new() { WaitUntil = WaitUntilState.Commit, Timeout = timeout });
         }
         catch (PlaywrightException ex) when (ex.Message.Contains("net::ERR_EMPTY_RESPONSE", StringComparison.OrdinalIgnoreCase))
         {
@@ -516,6 +540,9 @@ public class Scraper
         "[class*='graph' i]",
         "[id*='chart' i]",
         "img[data-watermark]",
+        "img[class*='wp-image-']",
+        "iframe[src*='datawrapper']",
+        "iframe[src*='tradingview']",
         "table",
     ];
 
@@ -564,9 +591,14 @@ public class Scraper
     private static async Task<List<string>> CaptureScreenshotsAsync(IPage page, SiteConfig site)
     {
         var screenshots = new List<string>();
-        var selectors = site.ScreenshotSelectors.Length > 0 ? site.ScreenshotSelectors : DefaultScreenshotSelectors;
+        var selectors = site.ScreenshotSelectors.Length > 0
+            ? site.ScreenshotSelectors
+            : AllowsUncaptionedChartImages(site)
+                ? [.. DefaultScreenshotSelectors, "img"]
+                : DefaultScreenshotSelectors;
         var seenBoxes = new HashSet<string>();
 
+        await HideEuro2DayPrivacyPanelAsync(page, site);
         await HideFixedOverlaysAsync(page);
         await TriggerLazyLoadedImagesAsync(page);
 
@@ -588,22 +620,98 @@ public class Scraper
                 if (screenshots.Count >= MaxScreenshotsPerSite) break;
                 try
                 {
+                    if (await IsCapitalConsentOverlayAsync(el, site)) continue;
+
                     var box = await el.BoundingBoxAsync();
                     if (box is null || box.Width < 150 || box.Height < 80) continue;
 
                     var key = $"{Math.Round(box.X)}_{Math.Round(box.Y)}_{Math.Round(box.Width)}_{Math.Round(box.Height)}";
                     if (!seenBoxes.Add(key)) continue;
 
-                    if (!await HasChartOrTableMediaAsync(el)) continue;
+                    var bnpSourceImage = await TryDownloadBnpWordPressImageAsync(el, site);
+                    if (bnpSourceImage is not null && !IsBlankScreenshot(bnpSourceImage))
+                    {
+                        screenshots.Add(Convert.ToBase64String(bnpSourceImage));
+                        continue;
+                    }
+
+                    var citiSourceImage = await TryDownloadCitiWeeklyChartImageAsync(el, site);
+                    if (citiSourceImage is not null && !IsBlankScreenshot(citiSourceImage))
+                    {
+                        screenshots.Add(Convert.ToBase64String(citiSourceImage));
+                        continue;
+                    }
+
+                    if (!await HasChartOrTableMediaAsync(el, site)) continue;
 
                     var target = await ResolveScreenshotTargetAsync(el);
                     if (target is null) continue;
 
-                    await target.ScrollIntoViewIfNeededAsync();
+                    // A consent/promo layer can appear while lazy assets load, after the
+                    // initial page cleanup. Clear it again at the exact capture boundary.
+                    await DismissOverlaysAsync(page);
+                    await DismissObstructingWidgetsAsync(page);
+                    await HideEuro2DayPrivacyPanelAsync(page, site);
+                    await HideFixedOverlaysAsync(page);
+                    if (await IsCapitalConsentOverlayAsync(target, site) || await IsCaptureTargetObstructedAsync(target)) continue;
+
+                    var sourceImage = await TryDownloadBnpWordPressImageAsync(target, site);
+                    if (sourceImage is not null && !IsBlankScreenshot(sourceImage))
+                    {
+                        screenshots.Add(Convert.ToBase64String(sourceImage));
+                        continue;
+                    }
+
+                    try
+                    {
+                        await target.ScrollIntoViewIfNeededAsync();
+                    }
+                    catch
+                    {
+                        await target.EvaluateAsync("el => el.scrollIntoView({ block: 'center' })");
+                    }
+                    await DismissOverlaysAsync(page);
+                    await DismissObstructingWidgetsAsync(page);
+                    await HideEuro2DayPrivacyPanelAsync(page, site);
+                    await HideFixedOverlaysAsync(page);
+                    if (await IsCapitalConsentOverlayAsync(target, site) || await IsCaptureTargetObstructedAsync(target)) continue;
                     if (!await WaitForImagesToLoadAsync(target)) continue;
 
-                    var bytes = await target.ScreenshotAsync(new() { Type = ScreenshotType.Png });
-                    if (IsBlankScreenshot(bytes)) continue;
+                    byte[] bytes;
+                    try
+                    {
+                        bytes = await target.ScreenshotAsync(new()
+                        {
+                            Type = ScreenshotType.Png,
+                            Animations = ScreenshotAnimations.Disabled,
+                        });
+                    }
+                    catch
+                    {
+                        // Citi's weekly-chart layout keeps shifting after its image has
+                        // loaded, so Playwright's element screenshot never considers it
+                        // stable. The target box remains valid; capture that exact live
+                        // page region instead.
+                        var targetBox = await target.BoundingBoxAsync();
+                        if (targetBox is null) continue;
+                        bytes = await page.ScreenshotAsync(new()
+                        {
+                            Type = ScreenshotType.Png,
+                            Clip = new()
+                            {
+                                X = targetBox.X,
+                                Y = targetBox.Y,
+                                Width = targetBox.Width,
+                                Height = targetBox.Height,
+                            },
+                        });
+                    }
+                    if (IsBlankScreenshot(bytes))
+                    {
+                        sourceImage = await TryDownloadBnpWordPressImageAsync(target, site);
+                        if (sourceImage is null || IsBlankScreenshot(sourceImage)) continue;
+                        bytes = sourceImage;
+                    }
                     screenshots.Add(Convert.ToBase64String(bytes));
                 }
                 catch
@@ -615,6 +723,93 @@ public class Scraper
         }
 
         return screenshots;
+    }
+
+    private static async Task<bool> IsCapitalConsentOverlayAsync(IElementHandle element, SiteConfig site)
+    {
+        if (!string.Equals(site.Name, "Capital", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        try
+        {
+            return await element.EvaluateAsync<bool>("""
+                element => {
+                    const consentText = /σεβ[oό]μαστε την ιδιωτικ[oό]τητ[aά] σας|privacy settings|cookie settings|cookies και [όo]χι μ[oό]νο/i;
+                    for (let current = element; current && current !== document.body; current = current.parentElement) {
+                        const text = current.textContent ?? '';
+                        if (consentText.test(text)) return true;
+                        const idAndClass = `${current.id} ${current.className}`;
+                        if (/consent|privacy|cookie|sp_message/i.test(idAndClass)) return true;
+                    }
+                    return false;
+                }
+                """);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Euro2Day's privacy panel is absolutely positioned, so it survives the generic
+    // fixed/sticky cleanup and can cover the left side of a table screenshot.
+    private static async Task HideEuro2DayPrivacyPanelAsync(IPage page, SiteConfig site)
+    {
+        if (!string.Equals(site.Name, "Euro2Day", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            await page.EvaluateAsync("""
+                () => {
+                    const panelText = /απόρρητο είναι σημαντικό|διαχειριστείτε τις προτιμήσεις σας/i;
+                    for (const element of document.querySelectorAll('body *')) {
+                        if (!panelText.test(element.textContent ?? '')) continue;
+                        let panel = element;
+                        while (panel && panel !== document.body) {
+                            const style = getComputedStyle(panel);
+                            const box = panel.getBoundingClientRect();
+                            if ((style.position === 'absolute' || style.position === 'fixed') &&
+                                box.width >= 120 && box.height >= 80) {
+                                panel.style.setProperty('display', 'none', 'important');
+                                break;
+                            }
+                            panel = panel.parentElement;
+                        }
+                    }
+                }
+                """);
+        }
+        catch
+        {
+            // Screenshot capture remains best-effort if the panel detaches during navigation.
+        }
+    }
+
+    private static async Task<bool> IsCaptureTargetObstructedAsync(IElementHandle target)
+    {
+        try
+        {
+            return await target.EvaluateAsync<bool>("""
+                element => {
+                    const rect = element.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) return true;
+                    const points = [
+                        [rect.left + rect.width / 2, rect.top + rect.height / 2],
+                        [rect.left + 8, rect.top + 8],
+                        [rect.right - 8, rect.bottom - 8]
+                    ];
+                    return points.some(([x, y]) => {
+                        const covering = document.elementFromPoint(x, y);
+                        return covering && covering !== element && !element.contains(covering) && !covering.contains(element);
+                    });
+                }
+                """);
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     // Some sites (e.g. BlackRock) only load a chart's actual <img> once it scrolls into
@@ -724,14 +919,18 @@ public class Scraper
     //     a photo credit ("Photographer: X/Bloomberg"), not a data citation. Requiring the
     //     explicit source/chart/data keyword is what actually distinguishes a data chart
     //     figure from a decorative photo figure.
-    private static async Task<bool> HasChartOrTableMediaAsync(IElementHandle el)
+    private static async Task<bool> HasChartOrTableMediaAsync(IElementHandle el, SiteConfig site)
     {
         try
         {
             var tagName = await el.EvaluateAsync<string>("el => el.tagName.toLowerCase()");
             if (tagName is "table" or "svg" or "canvas") return true;
+            if (tagName == "iframe")
+                return await el.EvaluateAsync<bool>("""
+                    element => /datawrapper|tradingview/i.test(element.getAttribute('src') ?? '')
+                    """);
             if (tagName == "img")
-                return await el.EvaluateAsync<bool>("el => el.hasAttribute('data-watermark')");
+                return await IsDataChartImageAsync(el, site);
 
             return await el.EvaluateAsync<bool>(
                 @"el => {
@@ -747,13 +946,104 @@ public class Scraper
                     const img = el.querySelector('img');
                     if (!img) return false;
                     const text = (el.innerText || '').toLowerCase();
-                    return text.includes('source:') || text.includes('source ')
+                    const imageSignals = `${img.alt || ''} ${img.className || ''} ${img.currentSrc || img.src || ''}`.toLowerCase();
+                    const hasDataCaption = text.includes('source:') || text.includes('source ')
                         || text.includes('chart:') || text.includes('data:');
-                }");
+                    const hasChartSignal = /chart|graph|table|datawrapper|tradingview|performance|returns|allocation|market-data/.test(imageSignals);
+                    const photoSignal = /portrait|headshot|profile|author|speaker|person|people/.test(imageSignals);
+                    return hasChartSignal && !photoSignal && (hasDataCaption || trustedSource);
+                }""", AllowsUncaptionedChartImages(site));
         }
         catch
         {
             return false;
+        }
+    }
+
+    private static async Task<bool> IsDataChartImageAsync(IElementHandle image, SiteConfig site)
+    {
+        try
+        {
+            return await image.EvaluateAsync<bool>("""
+                (element, trustedSource) => {
+                    const signal = `${element.alt || ''} ${element.className || ''} ${element.currentSrc || element.src || ''}`.toLowerCase();
+                    const chartSignal = /chart|graph|table|datawrapper|tradingview|performance|returns|allocation|market-data/.test(signal);
+                    const photoSignal = /portrait|headshot|profile|author|speaker|person|people/.test(signal);
+                    if (!chartSignal || photoSignal) return false;
+                    const figure = element.closest('figure, [class*="chart" i], [class*="graph" i]');
+                    const context = figure?.innerText?.toLowerCase() ?? '';
+                    return trustedSource || context.includes('source:') || context.includes('source ')
+                        || context.includes('chart:') || context.includes('data:');
+                }
+                """, AllowsUncaptionedChartImages(site));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsBnpViewpoint(SiteConfig site) =>
+        Uri.TryCreate(site.Url, UriKind.Absolute, out var url) &&
+        url.Host.EndsWith("viewpoint.bnpparibas-am.com", StringComparison.OrdinalIgnoreCase);
+
+    // These two publishers serve charts as raster images but omit a nearby Source/Chart/Data
+    // caption. Restrict the fallback to their known sources so photo figures elsewhere stay out.
+    private static bool AllowsUncaptionedChartImages(SiteConfig site) =>
+        string.Equals(site.Name, "BlackRock Investment Institute", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(site.Name, "Edward Jones Weekly Update", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCitiMarketInsights(SiteConfig site) =>
+        Uri.TryCreate(site.Url, UriKind.Absolute, out var url) &&
+        url.Host.EndsWith("marketinsights.citi.com", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<byte[]?> TryDownloadCitiWeeklyChartImageAsync(IElementHandle target, SiteConfig site)
+    {
+        if (!IsCitiMarketInsights(site)) return null;
+
+        try
+        {
+            var imageUrl = await target.EvaluateAsync<string>("""
+                element => element.matches('img.weekly-figure')
+                    ? element.currentSrc
+                    : element.querySelector('img.weekly-figure')?.currentSrc ?? ''
+                """);
+            if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri) ||
+                !uri.Host.EndsWith("marketinsights.citi.com", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+            return await client.GetByteArrayAsync(uri);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static async Task<byte[]?> TryDownloadBnpWordPressImageAsync(IElementHandle target, SiteConfig site)
+    {
+        if (!IsBnpViewpoint(site)) return null;
+
+        try
+        {
+            var imageUrl = await target.EvaluateAsync<string>("""
+                element => element.tagName.toLowerCase() === 'img'
+                    ? element.currentSrc
+                    : element.querySelector("img[class*='wp-image-']")?.currentSrc ?? ''
+                """);
+            if (!Uri.TryCreate(imageUrl, UriKind.Absolute, out var uri) ||
+                !uri.Host.EndsWith("viewpoint.bnpparibas-am.com", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
+            return await client.GetByteArrayAsync(uri);
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -945,7 +1235,7 @@ public class Scraper
                 return {
                     linkIndex: index,
                     href: link.getAttribute('href') ?? '',
-                    contextText: [link.textContent, card?.textContent].filter(Boolean).join(' '),
+                    title: link.textContent ?? '',
                     dateText: [
                         card?.getAttribute('data-date'),
                         card?.querySelector('time')?.getAttribute('datetime'),
@@ -956,7 +1246,7 @@ public class Scraper
                 };
             })
             """, articleLinkSelector);
-        var articleUrls = new List<(string Url, DateTimeOffset? PublishedAt, int LinkIndex)>();
+        var articleUrls = new List<(string Url, string Title, DateTimeOffset? PublishedAt, int LinkIndex)>();
         foreach (var article in listedArticles)
         {
             if (string.IsNullOrWhiteSpace(article.Href)) continue;
@@ -966,20 +1256,11 @@ public class Scraper
                 !articleUrls.Any(item => item.Url.Equals(resolved.ToString(), StringComparison.OrdinalIgnoreCase)))
             {
                 var listedDate = TryParsePublishedDate(article.DateText);
-                articleUrls.Add((resolved.ToString(), listedDate, article.LinkIndex));
+                articleUrls.Add((resolved.ToString(), article.Title, listedDate, article.LinkIndex));
             }
         }
 
-        var articleLimit = string.Equals(site.Name, "Euro2Day", StringComparison.OrdinalIgnoreCase) ? 10 : int.MaxValue;
-        if (articleUrls.Count > articleLimit)
-        {
-            articleUrls = articleUrls.Take(articleLimit).ToList();
-            diagnostics.Add($"article-list selector '{articleLinkSelector}': limited to the {articleLimit} most recent link(s)");
-        }
-        else
-        {
-            diagnostics.Add($"article-list selector '{articleLinkSelector}': {articleUrls.Count} unique link(s) found");
-        }
+        diagnostics.Add($"article-list selector '{articleLinkSelector}': {articleUrls.Count} unique link(s) found");
         var cutoff = DateTimeOffset.UtcNow.Date.AddDays(-10);
         var articles = new List<LinkedArticleContent>();
         var sitemapDates = await LoadSitemapDatesAsync(articleUrls.Select(article => article.Url));
@@ -989,14 +1270,23 @@ public class Scraper
             IPage? articlePage = null;
             try
             {
+                if (string.Equals(site.Name, "Euro2Day", StringComparison.OrdinalIgnoreCase) &&
+                    !IsGreekMarketArticleTitle(article.Title))
+                {
+                    diagnostics.Add($"skipped non-domestic market article by title: {article.Url}");
+                    continue;
+                }
+
                 var publishedAt = article.PublishedAt
                     ?? (sitemapDates.TryGetValue(article.Url, out var sitemapDate) ? (DateTimeOffset?)sitemapDate : null);
-                if (!IsGreekSource(site) && publishedAt is not null && publishedAt.Value.Date < cutoff)
+                if (publishedAt is not null && publishedAt.Value.Date < cutoff)
                 {
                     diagnostics.Add($"skipped article published {publishedAt.Value:yyyy-MM-dd}: {article.Url}");
                     continue;
                 }
 
+                // Listing-card and sitemap dates let us reject stale articles without
+                // loading them. Only unknown dates need a page visit for verification.
                 // Use a separate tab so article navigation cannot replace the listing DOM
                 // that is still needed later for the source's own text and screenshots.
                 articlePage = await page.Context.NewPageAsync();
@@ -1052,20 +1342,11 @@ public class Scraper
                 var text = await ExtractLinkedArticleTextAsync(articlePage, site.Selectors);
                 var title = await ExtractArticleTitleAsync(articlePage);
 
-                if (IsGreekSource(site) && !IsMorningView(site) && !IsGreekMarketArticle(title))
-                {
-                    diagnostics.Add($"skipped non-domestic market article: {articlePage.Url}");
-                    continue;
-                }
-
                 if (!string.IsNullOrWhiteSpace(text))
                 {
+                    await DismissObstructingWidgetsAsync(articlePage);
+                    await HideFixedOverlaysAsync(articlePage);
                     var screenshots = await CaptureScreenshotsAsync(articlePage, site);
-                    if (string.Equals(site.Name, "Capital", StringComparison.OrdinalIgnoreCase) && articles.Count >= 2)
-                    {
-                        diagnostics.Add($"skipped older domestic market article after retaining the two newest: {articlePage.Url}");
-                        continue;
-                    }
                     articles.Add(new LinkedArticleContent(
                         $"Άρθρο ({publishedAt.Value:dd/MM/yyyy}) — {articlePage.Url}\n{text}",
                         publishedAt.Value,
@@ -1119,28 +1400,32 @@ public class Scraper
         }
     }
 
-    private static bool IsGreekMarketArticle(string title)
+    private static bool IsGreekMarketArticleTitle(string title)
     {
-        var normalizedTitle = string.Concat(title
+        var normalizedTitle = title
             .Normalize(NormalizationForm.FormD)
-            .Where(character => CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.NonSpacingMark))
+            .Where(character => CharUnicodeInfo.GetUnicodeCategory(character) != UnicodeCategory.NonSpacingMark)
+            .Aggregate(new StringBuilder(), (builder, character) => builder.Append(character)).ToString()
             .ToUpperInvariant();
         return GreekMarketSignals.Any(signal => normalizedTitle.Contains(signal, StringComparison.Ordinal));
     }
 
-    // Greek publishers mix domestic and foreign stories on the same markets feed. The
-    // article title must establish a Greek equity or banking-market context before it
-    // reaches the report; generic references to Greece and company-name lists are not enough.
+    // Greek publishers mix domestic and foreign stories on the same markets feed. Check the
+    // complete article because the Greek-market context is often only stated in the body.
     private static readonly string[] GreekMarketSignals =
     [
-        "ΧΡΗΜΑΤΙΣΤΗΡΙ", "ATHEX", "Χ.Α.", "ΓΕΝΙΚΟΣ ΔΕΙΚΤΗΣ", "FTSE/ATHEX",
-        "ΕΛΛΗΝΙΚΕΣ ΤΡΑΠΕΖ", "ΕΛΛΗΝΙΚΩΝ ΤΡΑΠΕΖ", "ΤΡΑΠΕΖΙΚ",
+        "ΧΡΗΜΑΤΙΣΤΗΡΙΟ ΑΘΗΝΩΝ", "ΧΡΗΜΑΤΙΣΤΗΡΙΟ", "ATHEX", "Χ.Α.", "ΓΕΝΙΚΟΣ ΔΕΙΚΤΗΣ", "FTSE/ATHEX",
+        "ΕΛΛΗΝΙΚΗ ΑΓΟΡ", "ΕΛΛΗΝΙΚΕΣ ΜΕΤΟΧ", "ΕΛΛΗΝΙΚΩΝ ΜΕΤΟΧ",
+        "ΕΛΛΗΝΙΚΕΣ ΕΙΣΗΓΜ", "ΕΛΛΗΝΙΚΩΝ ΕΙΣΗΓΜ", "ΕΛΛΗΝΙΚΕΣ ΤΡΑΠΕΖ",
+        "ΕΛΛΗΝΙΚΩΝ ΤΡΑΠΕΖ", "ΤΡΑΠΕΖΙΚΟΣ ΔΕΙΚΤ", "ΛΕΩΦΟΡΟ ΑΘΗΝΩΝ", "ΑΘΗΝΑΪΚΗ ΑΓΟΡ",
+        "ΕΓΧΩΡΙΑ ΑΓΟΡ", "ΕΓΧΩΡΙΕΣ ΜΕΤΟΧ", "BLUE CHIPS", "ΕΛΛΑΔ",
     ];
 
     private sealed class ListedArticle
     {
         public int LinkIndex { get; set; }
         public string Href { get; set; } = "";
+        public string Title { get; set; } = "";
         public string DateText { get; set; } = "";
     }
 
@@ -1548,6 +1833,38 @@ public class Scraper
             catch { }
         }
         return null;
+    }
+
+    private static async Task<string?> DismissJpmorganInstitutionalGateAsync(IPage page)
+    {
+        try
+        {
+            var result = await page.EvaluateAsync<string>("""
+                () => {
+                    const gateText = /institutional investor|professional client|important information|terms and conditions/i;
+                    const actionText = /accept|agree|continue|confirm|enter site|i understand/i;
+                    const containers = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], [class*="disclaimer" i], [class*="modal" i], [class*="overlay" i]'));
+                    const gate = containers.find(container => gateText.test(container.textContent ?? ''));
+                    if (!gate) return 'not-found';
+                    const action = Array.from(gate.querySelectorAll('button, a, [role="button"]'))
+                        .find(element => actionText.test(element.textContent ?? ''));
+                    if (!action || !(action instanceof HTMLElement)) return 'no-action';
+                    action.click();
+                    return `clicked:${(action.textContent ?? '').trim().slice(0, 80)}`;
+                }
+                """);
+            if (result == "not-found")
+                return null;
+
+            await page.WaitForTimeoutAsync(750);
+            return result == "no-action"
+                ? "JPMorgan institutional gate found but no accept/continue control was available"
+                : $"dismissed JPMorgan institutional gate via '{result[8..]}'";
+        }
+        catch
+        {
+            return "JPMorgan institutional gate dismissal could not be completed";
+        }
     }
 
     // Clicks an element, falling back to a JS-level el.click() dispatch if Playwright's

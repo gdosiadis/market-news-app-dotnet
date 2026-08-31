@@ -189,6 +189,42 @@ namespace MarketNewsApp.Data.Migrations
                     b.ToTable("ConfigurationAuditEntries");
                 });
 
+            modelBuilder.Entity("MarketNewsApp.Data.PipelineCheckpoint", b =>
+                {
+                    b.Property<string>("RunId")
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("RunDate")
+                        .HasMaxLength(10)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Stage")
+                        .HasMaxLength(30)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SourceName")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContentHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("RunId", "Stage", "SourceName");
+
+                    b.HasIndex("RunDate", "Stage");
+
+                    b.ToTable("PipelineCheckpoints");
+                });
+
             modelBuilder.Entity("MarketNewsApp.Data.EmailConfiguration", b =>
                 {
                     b.Property<int>("Id")

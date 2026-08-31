@@ -50,7 +50,8 @@ public class EmailSender
         var reportDate = DateTime.Now.ToString("dddd, dd MMMM yyyy");
         var sinceDate = DateTime.Now.AddDays(-10).ToString("dd/MM/yyyy");
 
-        var htmlBody = RenderHtml(aiSummary, reportDate, sinceDate);
+        var sourceNames = perSource.Keys.ToList();
+        var htmlBody = RenderHtml(aiSummary, reportDate, sinceDate, sourceNames);
 
         // Build MIME message
         var message = new MimeMessage();
@@ -63,7 +64,7 @@ public class EmailSender
         var builder = new BodyBuilder();
         builder.TextBody = $"Εβδομαδιαία Ενημέρωση Αγορών — {reportDate}\n\n" +
             "Ανοίξτε σε email client που υποστηρίζει HTML για να δείτε γραφήματα/πίνακες (screenshots από τις πηγές).\n\n" +
-            "Πηγές: Bloomberg, BlackRock, T. Rowe Price, John Hancock, BNP Paribas AM, Edward Jones, JPMorgan AM, Citi";
+            $"Πηγές: {string.Join(", ", sourceNames)}";
         builder.HtmlBody = htmlBody;
 
         // Attach each source's page screenshots (charts/tables captured verbatim from the
@@ -83,11 +84,50 @@ public class EmailSender
 
         message.Body = builder.ToMessageBody();
 
-        // Send via SMTP (Gmail by default, or SMTP_HOST override e.g. Mailpit)
-        Console.WriteLine($"  Sending to {string.Join(", ", recipients)} via {smtpHost}:{smtpPort}...");
-        using var client = new MailKit.Net.Smtp.SmtpClient();
-        client.Timeout = 30000;
+        SendMessage(message, smtpHost, smtpPort, smtpUser, smtpPass, smtpSecureSetting);
+        ReportArchive.Save(htmlBody, perSource);
+        Console.WriteLine($"  Email sent successfully to {string.Join(", ", recipients)}");
+    }
 
+    public void SendOperationalAlert(IReadOnlyList<string> recipients, string subject, string htmlBody)
+    {
+        if (recipients.Count == 0)
+            return;
+
+        static string? EnvOrNull(string name)
+        {
+            var value = Environment.GetEnvironmentVariable(name);
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+
+        var smtpHost = EnvOrNull("SMTP_HOST") ?? "smtp.gmail.com";
+        var isGmail = smtpHost == "smtp.gmail.com";
+        var gmailUser = EnvOrNull("GMAIL_USER");
+        var smtpPort = int.TryParse(EnvOrNull("SMTP_PORT"), out var port) ? port : 465;
+        var smtpUser = EnvOrNull("SMTP_USER") ?? (isGmail ? gmailUser : null);
+        var smtpPass = EnvOrNull("SMTP_PASS") ?? (isGmail ? EnvOrNull("GMAIL_APP_PASSWORD") : null);
+        var smtpSecureSetting = EnvOrNull("SMTP_SECURE")?.Trim().ToLowerInvariant();
+        var fromAddress = EnvOrNull("EMAIL_FROM") ?? smtpUser ?? "market-news@localhost";
+
+        if (isGmail && (gmailUser is null || smtpPass is null))
+            throw new InvalidOperationException("GMAIL_USER / GMAIL_APP_PASSWORD not set (or configure SMTP_HOST for a different provider)");
+
+        var message = new MimeMessage();
+        message.From.Add(new MailboxAddress(_configuration.FromDisplayName, fromAddress));
+        foreach (var recipient in recipients)
+            message.To.Add(MailboxAddress.Parse(recipient));
+        message.Subject = subject;
+        message.Body = new BodyBuilder { HtmlBody = htmlBody, TextBody = HtmlToText(htmlBody) }.ToMessageBody();
+
+        SendMessage(message, smtpHost, smtpPort, smtpUser, smtpPass, smtpSecureSetting);
+    }
+
+    private static string HtmlToText(string html) => System.Text.RegularExpressions.Regex.Replace(html, "<[^>]+>", " ");
+
+    private static void SendMessage(MimeMessage message, string smtpHost, int smtpPort, string? smtpUser, string? smtpPass, string? smtpSecureSetting)
+    {
+        // Retrying the connection is safe; retrying Send after an uncertain response can duplicate a report.
+        Console.WriteLine($"  Sending to {string.Join(", ", message.To)} via {smtpHost}:{smtpPort}...");
         var secureOptions = smtpSecureSetting switch
         {
             "none" => SecureSocketOptions.None,
@@ -96,25 +136,36 @@ public class EmailSender
             _ => smtpHost == "smtp.gmail.com" ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.None,
         };
 
-        try
+        using var client = SmtpResilience.ConnectionRetry.Execute(() =>
         {
-            client.Connect(smtpHost, smtpPort, secureOptions);
-        }
-        catch when (smtpHost == "smtp.gmail.com" && smtpSecureSetting is null)
-        {
-            client.Connect(smtpHost, 587, SecureSocketOptions.StartTls);
-        }
+            var smtpClient = new MailKit.Net.Smtp.SmtpClient { Timeout = 30000 };
+            try
+            {
+                try
+                {
+                    smtpClient.Connect(smtpHost, smtpPort, secureOptions);
+                }
+                catch when (smtpHost == "smtp.gmail.com" && smtpSecureSetting is null)
+                {
+                    smtpClient.Connect(smtpHost, 587, SecureSocketOptions.StartTls);
+                }
 
-        if (!string.IsNullOrEmpty(smtpUser) && !string.IsNullOrEmpty(smtpPass))
-            client.Authenticate(smtpUser, smtpPass);
+                if (!string.IsNullOrEmpty(smtpUser) && !string.IsNullOrEmpty(smtpPass))
+                    smtpClient.Authenticate(smtpUser, smtpPass);
+                return smtpClient;
+            }
+            catch
+            {
+                smtpClient.Dispose();
+                throw;
+            }
+        });
 
         client.Send(message);
         client.Disconnect(true);
-
-        Console.WriteLine($"  Email sent successfully to {string.Join(", ", recipients)}");
     }
 
-    public string RenderHtml(string aiSummary, string reportDate, string sinceDate)
+    public string RenderHtml(string aiSummary, string reportDate, string sinceDate, IEnumerable<string> sourceNames)
     {
         var templatePath = Path.Combine(AppContext.BaseDirectory, "Templates", "email_template.html");
         if (!File.Exists(templatePath))
@@ -131,11 +182,17 @@ public class EmailSender
                 reportContent = reportTemplate.Render(new { ai_summary = aiSummary, report_date = reportDate, since_date = sinceDate });
         }
 
+        var selectedSourceNames = sourceNames.Distinct(StringComparer.Ordinal).ToList();
+        var sourcePills = string.Join("\n", selectedSourceNames.Select(name =>
+            $"<span class=\"source-pill\">{System.Net.WebUtility.HtmlEncode(name)}</span>"));
+
         return template.Render(new
         {
             ai_summary = reportContent,
             report_date = reportDate,
             since_date = sinceDate,
+            source_pills = sourcePills,
+            source_names = System.Net.WebUtility.HtmlEncode(string.Join(", ", selectedSourceNames)),
         });
     }
 }

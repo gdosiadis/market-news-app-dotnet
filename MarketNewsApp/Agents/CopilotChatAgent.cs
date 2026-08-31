@@ -5,7 +5,7 @@ namespace MarketNewsApp.Agents;
 /// <summary>
 /// GitHub Copilot SDK chat agent (default provider) — uses the logged-in Copilot
 /// session, no API key needed, and is reachable even when corporate firewalls
-/// block api.groq.com / OpenAI endpoints.
+/// block OpenAI endpoints.
 /// </summary>
 public sealed class CopilotChatAgent : IChatAgent
 {

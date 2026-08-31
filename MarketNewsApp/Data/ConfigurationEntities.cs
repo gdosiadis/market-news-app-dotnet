@@ -116,3 +116,14 @@ public sealed class ConfigurationAuditEntry
     public string? AfterJson { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
 }
+
+public sealed class PipelineCheckpoint
+{
+    public required string RunId { get; set; }
+    public required string RunDate { get; set; }
+    public required string Stage { get; set; }
+    public required string SourceName { get; set; }
+    public string? ContentHash { get; set; }
+    public required string PayloadJson { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+}

@@ -8,10 +8,17 @@ services:
       - "8081:8080"
     environment:
       SQLITE_CONNECTION_STRING: Data Source=/data/market-news.db
+      PipelineLogs__Path: /app/pipeline/logs/audit.jsonl
+      ReportArchive__Path: /reports
+    env_file:
+      - path: ./MarketNewsApp/.env
+        required: false
     volumes:
       - market-news-data:/data
+      - market-news-logs:/app/pipeline/logs
+      - market-news-reports:/reports:ro
     healthcheck:
-      test: ["CMD-SHELL", "test -f /data/market-news.db"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health > /dev/null"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -31,9 +38,18 @@ services:
         required: false
     environment:
       SQLITE_CONNECTION_STRING: Data Source=/data/market-news.db
+      REPORT_ARCHIVE_PATH: /reports
+      BACKUP_PATH: /backups
+      RETENTION_DAYS: 30
     volumes:
       - market-news-data:/data
+      - market-news-logs:/app/logs
+      - market-news-reports:/reports
+      - market-news-backups:/backups
     command: ["--test"]
 
 volumes:
   market-news-data:
+  market-news-logs:
+  market-news-reports:
+  market-news-backups:

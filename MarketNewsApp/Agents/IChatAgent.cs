@@ -1,7 +1,7 @@
 namespace MarketNewsApp.Agents;
 
 /// <summary>
-/// A single AI chat backend (provider). Each provider (Copilot, Groq, Azure OpenAI)
+/// A single AI chat backend (provider). Each provider (Copilot, Azure OpenAI, OpenAI)
 /// lives in its own file under Agents/ and implements this same contract so
 /// AiSummarizer can talk to whichever one is configured without caring which it is.
 /// </summary>

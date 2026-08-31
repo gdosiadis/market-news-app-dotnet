@@ -1,0 +1,50 @@
+@model MarketNewsAdmin.Models.PipelineRunsViewModel
+@{ ViewData["Title"] = "Pipeline runs"; }
+<section class="panel console-panel">
+    <div class="panel-head"><div><span class="eyebrow">MANUAL RUN OUTPUT</span><h2>Live terminal</h2></div><span id="console-status" class="status neutral">Waiting for a manual run</span></div>
+    <pre id="pipeline-console" class="pipeline-console">Start “Scrape &amp; send report” from the overview to see its terminal output here.</pre>
+</section>
+<section class="panel">
+    <div class="panel-head"><div><span class="eyebrow">PIPELINE EVENTS</span><h2>Recent runs</h2></div><span class="muted">Most recent 100 runs</span></div>
+    @if (!Model.LogAvailable)
+    {
+        <p class="muted">No pipeline event log is available yet. Expected log: @Model.LogPath</p>
+    }
+    else if (!Model.Runs.Any())
+    {
+        <p class="muted">No pipeline events have been recorded yet.</p>
+    }
+    else
+    {
+        <div class="table-wrap"><table><thead><tr><th>Started</th><th>Run</th><th>Sources</th><th>Scrape</th><th>AI</th><th>Synthesis</th><th>Mode</th><th>Details</th></tr></thead><tbody>
+        @foreach (var run in Model.Runs)
+        {
+            <tr>
+                <td>@run.StartedAt.LocalDateTime.ToString("dd MMM yyyy, HH:mm")</td>
+                <td><strong>@run.RunId</strong></td>
+                <td>@run.SourceCount</td>
+                <td><span class="status @(run.ScrapeFailures == 0 ? "success" : "danger")">@(run.ScrapeFailures == 0 ? "OK" : $"{run.ScrapeFailures} failed")</span></td>
+                <td><span class="status @(run.AiFailures == 0 ? "success" : "danger")">@(run.AiFailures == 0 ? "OK" : $"{run.AiFailures} failed")</span></td>
+                <td><span class="status @(run.SynthesisStatus is "Success" or "Cached" ? "success" : "danger")">@run.SynthesisStatus</span></td>
+                <td>@(run.FromCache ? "Cache" : "Fresh scrape")</td>
+                <td><details><summary>Sources</summary><ul>@foreach (var item in run.Events) { <li><strong>@item.Site</strong>: @(item.ScrapeIsOk ? "scrape OK" : "scrape failed"), AI @item.AiStatus</li> }</ul></details></td>
+            </tr>
+        }
+        </tbody></table></div>
+    }
+</section>
+<script>
+    const consoleElement = document.getElementById('pipeline-console');
+    const consoleStatus = document.getElementById('console-status');
+    async function refreshConsole() {
+        const response = await fetch('@Url.Action("ConsoleOutput", "Dashboard")', { cache: 'no-store' });
+        if (!response.ok) return;
+        const output = await response.json();
+        consoleElement.textContent = output.lines.length ? output.lines.join('\n') : 'Start “Scrape & send report” from the overview to see its terminal output here.';
+        consoleElement.scrollTop = consoleElement.scrollHeight;
+        consoleStatus.textContent = output.isRunning ? 'Running' : output.exitCode === null ? 'Waiting for a manual run' : output.exitCode === 0 ? 'Completed successfully' : `Exited with code ${output.exitCode}`;
+        consoleStatus.className = `status ${output.isRunning || output.exitCode === 0 ? 'success' : output.exitCode === null ? 'neutral' : 'danger'}`;
+    }
+    refreshConsole();
+    setInterval(refreshConsole, 2000);
+</script>

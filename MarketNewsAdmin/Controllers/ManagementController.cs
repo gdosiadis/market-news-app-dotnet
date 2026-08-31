@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore;
 namespace MarketNewsAdmin.Controllers;
 
 [Authorize(Policy = "Administrators")]
-public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> contextFactory, AdminConfigurationService auditService) : Controller
+public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> contextFactory, AdminConfigurationService auditService, PipelineActivityService pipelineActivityService, ReportArchiveService reportArchiveService) : Controller
 {
     private static readonly ISet<string> SingletonSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "agents", "schedules" };
     private static readonly ISet<string> SourceSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "sources", "greek-sources" };
@@ -97,7 +97,124 @@ public sealed class ManagementController(IDbContextFactory<MarketNewsDbContext> 
         return RedirectToAction(nameof(Index), new { section });
     }
 
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetSourcesSelected(string section, bool selected)
+    {
+        if (!SourceSections.Contains(section)) return NotFound();
+        await using var db = await contextFactory.CreateDbContextAsync();
+        var sources = await db.ScrapeSources
+            .Where(source => source.SourceRegion == SourceRegionFor(section) && source.IsEnabled != selected)
+            .ToListAsync();
+        var actor = User.Identity?.Name ?? "unknown";
+        var changes = sources.Select(source => (Source: source, Before: JsonSerializer.Serialize(source))).ToList();
+
+        foreach (var source in sources)
+            source.IsEnabled = selected;
+
+        await db.SaveChangesAsync();
+        foreach (var change in changes)
+            AdminConfigurationService.Audit(db, change.Source, "Updated", actor, change.Before);
+        await db.SaveChangesAsync();
+        TempData["Success"] = sources.Count == 0
+            ? "Source selection was already up to date."
+            : $"{sources.Count} source(s) {(selected ? "selected for scraping" : "excluded from scraping")}.";
+        return RedirectToAction(nameof(Index), new { section });
+    }
+
     public async Task<IActionResult> Activity(string? entityType = null) => View(new ActivityViewModel { EntityType = entityType, Entries = await auditService.HistoryAsync(entityType) });
+
+    public async Task<IActionResult> PipelineRuns() => View(await pipelineActivityService.GetRunsAsync());
+
+    public IActionResult ReportArchive() => View(reportArchiveService.GetReports());
+
+    public IActionResult ReportPreview(string fileName)
+    {
+        var reportPath = reportArchiveService.FindReportPath(fileName);
+        if (reportPath is null)
+            return NotFound();
+
+        var file = new FileInfo(reportPath);
+        return View(new ArchivedReportViewModel(file.Name, file.CreationTimeUtc, file.Length));
+    }
+
+    public async Task<IActionResult> ReportContent(string fileName)
+    {
+        var reportPath = reportArchiveService.FindReportPath(fileName);
+        if (reportPath is null)
+            return NotFound();
+
+        try
+        {
+            var html = await System.IO.File.ReadAllTextAsync(reportPath);
+            return Content(html, "text/html; charset=utf-8");
+        }
+        catch (FileNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    public async Task<IActionResult> DownloadReport(string fileName)
+    {
+        var reportPath = reportArchiveService.FindReportPath(fileName);
+        if (reportPath is null)
+            return NotFound();
+
+        try
+        {
+            var content = await System.IO.File.ReadAllBytesAsync(reportPath);
+            return File(content, "text/html; charset=utf-8", fileName);
+        }
+        catch (FileNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    public async Task<IActionResult> PipelineCheckpoints()
+    {
+        await using var db = await contextFactory.CreateDbContextAsync();
+        var checkpointRows = await db.PipelineCheckpoints.AsNoTracking()
+            .Select(checkpoint => new PipelineCheckpointViewModel(
+                checkpoint.RunId,
+                checkpoint.RunDate,
+                checkpoint.Stage,
+                checkpoint.SourceName,
+                checkpoint.ContentHash,
+                checkpoint.UpdatedAt))
+            .ToListAsync();
+        var checkpoints = checkpointRows
+            .OrderByDescending(checkpoint => checkpoint.RunDate)
+            .ThenByDescending(checkpoint => checkpoint.UpdatedAt)
+            .ToList();
+        return View(new PipelineCheckpointsViewModel { Checkpoints = checkpoints });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeletePipelineCheckpoint(string runId, string stage, string sourceName)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync();
+        var checkpoint = await db.PipelineCheckpoints.FindAsync([runId, stage, sourceName]);
+        if (checkpoint is null)
+            return NotFound();
+
+        db.PipelineCheckpoints.Remove(checkpoint);
+        await db.SaveChangesAsync();
+        TempData["Success"] = $"Checkpoint for {sourceName} removed.";
+        return RedirectToAction(nameof(PipelineCheckpoints));
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeleteAllPipelineCheckpoints()
+    {
+        await using var db = await contextFactory.CreateDbContextAsync();
+        var deleted = await db.PipelineCheckpoints.ExecuteDeleteAsync();
+        TempData["Success"] = $"{deleted} checkpoint(s) removed.";
+        return RedirectToAction(nameof(PipelineCheckpoints));
+    }
 
     private static async Task<IReadOnlyList<ManagementRow>> RowsAsync(MarketNewsDbContext db, string section, string? search) => section switch
     {

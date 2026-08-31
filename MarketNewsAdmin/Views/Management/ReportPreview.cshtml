@@ -1,0 +1,6 @@
+@model MarketNewsAdmin.Models.ArchivedReportViewModel
+@{ ViewData["Title"] = $"Report preview - {Model.CreatedAt.LocalDateTime:dd MMM yyyy}"; }
+<section class="panel report-preview-panel">
+    <div class="panel-head"><div><span class="eyebrow">DELIVERED REPORT</span><h2>@Model.CreatedAt.LocalDateTime.ToString("dd MMM yyyy, HH:mm")</h2></div><a class="button secondary" asp-action="ReportArchive"><i data-lucide="arrow-left"></i>Back to archive</a></div>
+    <iframe class="report-preview-frame" title="Archived market report preview" sandbox src="@Url.Action("ReportContent", new { fileName = Model.FileName })"></iframe>
+</section>

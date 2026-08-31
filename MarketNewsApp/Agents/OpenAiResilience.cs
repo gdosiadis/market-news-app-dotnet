@@ -1,3 +1,4 @@
+using System.Net;
 using Polly;
 using Polly.Retry;
 using Serilog;
@@ -10,7 +11,7 @@ internal static class OpenAiResilience
         .AddRetry(new RetryStrategyOptions
         {
             ShouldHandle = new PredicateBuilder()
-                .Handle<HttpRequestException>()
+                .Handle<HttpRequestException>(IsTransientHttpFailure)
                 .Handle<TimeoutException>()
                 .Handle<TaskCanceledException>(),
             MaxRetryAttempts = 3,
@@ -28,4 +29,8 @@ internal static class OpenAiResilience
             },
         })
         .Build();
+
+    private static bool IsTransientHttpFailure(HttpRequestException exception) =>
+        exception.StatusCode is null or HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
+        (int)exception.StatusCode >= 500;
 }

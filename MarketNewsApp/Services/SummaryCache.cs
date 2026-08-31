@@ -57,4 +57,10 @@ public static class SummaryCache
             Console.WriteLine($"  ⚠️  Summary cache save failed: {ex.Message}");
         }
     }
+
+    public static void ClearToday()
+    {
+        if (File.Exists(TodayFile))
+            File.Delete(TodayFile);
+    }
 }

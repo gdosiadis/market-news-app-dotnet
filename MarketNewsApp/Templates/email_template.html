@@ -265,13 +265,7 @@
 
   <!-- Sources -->
   <div class="sources">
-    <span class="source-pill">Bloomberg</span>
-    <span class="source-pill">BlackRock</span>
-    <span class="source-pill">T. Rowe Price</span>
-    <span class="source-pill">BNP Paribas AM</span>
-    <span class="source-pill">Edward Jones</span>
-    <span class="source-pill">JPMorgan AM</span>
-    <span class="source-pill">Citi</span>
+    {{ source_pills }}
   </div>
 
   <!-- Per-source AI Sections (screenshots of charts/tables are embedded inline within each source's section) -->
@@ -286,8 +280,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    <p>Δημιουργήθηκε αυτόματα από <strong>Market News AI</strong> · Πηγές: Bloomberg, BlackRock, T. Rowe Price,
-    BNP Paribas AM, Edward Jones, JPMorgan AM, Citi</p>
+    <p>Δημιουργήθηκε αυτόματα από <strong>Market News AI</strong> · Πηγές: {{ source_names }}</p>
     <p style="margin-top:6px;">Market News AI · Επιμελημένη καθημερινή ενημέρωση αγορών</p>
   </div>
 

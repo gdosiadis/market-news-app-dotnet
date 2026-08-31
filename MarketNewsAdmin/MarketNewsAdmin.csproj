@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
-    <ProjectReference Include="..\MarketNewsApp\MarketNewsApp.csproj" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.18" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.18" />
+    <ProjectReference Include="..\MarketNewsApp\MarketNewsApp.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -1,0 +1,18 @@
+@model MarketNewsAdmin.Models.ReportArchiveViewModel
+@{ ViewData["Title"] = "Report archive"; }
+<section class="panel">
+    <div class="panel-head"><div><span class="eyebrow">DELIVERED REPORTS</span><h2>HTML previews</h2></div><span class="muted">Successfully sent reports</span></div>
+    @if (!Model.Reports.Any())
+    {
+        <p class="archive-empty">No delivered reports have been archived yet. New reports are saved here after their email delivery succeeds.</p>
+    }
+    else
+    {
+        <div class="table-wrap"><table><thead><tr><th>Delivered</th><th>File size</th><th>Actions</th></tr></thead><tbody>
+        @foreach (var report in Model.Reports)
+        {
+            <tr><td><strong>@report.CreatedAt.LocalDateTime.ToString("dd MMM yyyy, HH:mm")</strong></td><td>@Math.Ceiling(report.SizeBytes / 1024d) KB</td><td><div class="archive-actions"><a class="button secondary" asp-action="ReportPreview" asp-route-fileName="@report.FileName" target="_blank" rel="noopener"><i data-lucide="external-link"></i>Open preview</a><a class="button primary" asp-action="DownloadReport" asp-route-fileName="@report.FileName"><i data-lucide="download"></i>Download</a></div></td></tr>
+        }
+        </tbody></table></div>
+    }
+</section>

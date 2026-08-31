@@ -13,7 +13,6 @@ public sealed class EnvAgentSettingsProvider : IAgentSettingsProvider
         {
             Provider = Environment.GetEnvironmentVariable("AI_PROVIDER")?.Trim().ToLowerInvariant(),
             CopilotModel = Environment.GetEnvironmentVariable("COPILOT_MODEL"),
-            GroqApiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY"),
             OpenAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
             OpenAiModel = Environment.GetEnvironmentVariable("OPENAI_MODEL"),
             OpenAiEndpoint = Environment.GetEnvironmentVariable("OPENAI_ENDPOINT"),

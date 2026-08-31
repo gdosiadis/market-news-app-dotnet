@@ -7,12 +7,10 @@ namespace MarketNewsApp.Agents;
 /// </summary>
 public record AgentSettings
 {
-    // "copilot" | "groq" | "azure" | "openai" | null (= auto-detect, same rules as before)
+    // "copilot" | "azure" | "openai" | null (= auto-detect, same rules as before)
     public string? Provider { get; init; }
 
     public string? CopilotModel { get; init; }
-
-    public string? GroqApiKey { get; init; }
 
     public string? OpenAiApiKey { get; init; }
     public string? OpenAiModel { get; init; }

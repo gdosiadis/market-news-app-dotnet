@@ -16,6 +16,7 @@ public sealed class MarketNewsDbContext(DbContextOptions<MarketNewsDbContext> op
     public DbSet<ReportTemplateConfiguration> ReportTemplates => Set<ReportTemplateConfiguration>();
     public DbSet<ApplicationSetting> ApplicationSettings => Set<ApplicationSetting>();
     public DbSet<ConfigurationAuditEntry> ConfigurationAuditEntries => Set<ConfigurationAuditEntry>();
+    public DbSet<PipelineCheckpoint> PipelineCheckpoints => Set<PipelineCheckpoint>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -77,6 +78,16 @@ public sealed class MarketNewsDbContext(DbContextOptions<MarketNewsDbContext> op
             entity.Property(entry => entry.EntityId).HasMaxLength(100);
             entity.Property(entry => entry.Action).HasMaxLength(30);
             entity.Property(entry => entry.Actor).HasMaxLength(100);
+        });
+        modelBuilder.Entity<PipelineCheckpoint>(entity =>
+        {
+            entity.HasKey(checkpoint => new { checkpoint.RunId, checkpoint.Stage, checkpoint.SourceName });
+            entity.Property(checkpoint => checkpoint.RunId).HasMaxLength(32);
+            entity.HasIndex(checkpoint => new { checkpoint.RunDate, checkpoint.Stage });
+            entity.Property(checkpoint => checkpoint.RunDate).HasMaxLength(10);
+            entity.Property(checkpoint => checkpoint.Stage).HasMaxLength(30);
+            entity.Property(checkpoint => checkpoint.SourceName).HasMaxLength(200);
+            entity.Property(checkpoint => checkpoint.ContentHash).HasMaxLength(64);
         });
 
         modelBuilder.Entity<ScrapeSourceConfiguration>().HasData(ConfigurationSeed.Sources);

@@ -2,7 +2,7 @@
 
 Αυτόματη εφαρμογή σε .NET 8 που κάθε μέρα:
 1. **Αντλεί** ειδήσεις από 7 κορυφαίους χρηματοοικονομικούς οίκους με Playwright
-2. **Συνοψίζει** στα Ελληνικά μέσω Groq AI ή Azure OpenAI (Azure AI Foundry)
+2. **Συνοψίζει** στα Ελληνικά μέσω GitHub Copilot ή Azure OpenAI (Azure AI Foundry)
 3. **Καταγράφει** screenshots γραφημάτων/πινάκων απευθείας από τις σελίδες-πηγές (χωρίς AI rendering)
 4. **Αποστέλλει** HTML email μέσω Gmail (MailKit)
 
@@ -36,7 +36,7 @@ pwsh bin/Debug/net8.0/playwright.ps1 install chromium
 cp .env.example .env
 # Επεξεργαστείτε το .env με:
 #   - SQLITE_CONNECTION_STRING → SQLite file για production configuration
-#   - GROQ_API_KEY ή Azure OpenAI credentials → μόνο secrets του AI provider
+#   - Azure OpenAI credentials (προαιρετικά) → μόνο secrets του AI provider
 #   - GMAIL_USER    → το Gmail σας
 #   - GMAIL_APP_PASSWORD → Google Account > Security > App Passwords
 ```
@@ -66,7 +66,7 @@ MarketNewsApp/
 ├── Program.cs               # Orchestrator + Scheduler (top-level statements)
 ├── Services/
 │   ├── Scraper.cs           # Playwright async scraper (+ chart/table screenshot capture)
-│   ├── AiSummarizer.cs     # Groq AI (ελληνική σύνοψη ανά πηγή + συνθετική επισκόπηση)
+│   ├── AiSummarizer.cs     # AI σύνοψη (ελληνική σύνοψη ανά πηγή + συνθετική επισκόπηση)
 │   ├── ScrapeCache.cs      # Ημερήσια cache του scraped/cleaned περιεχομένου
 │   ├── SummaryCache.cs     # Ημερήσια cache των AI summaries + synthesis
 │   └── EmailSender.cs      # Gmail SMTP αποστολή (MailKit)
@@ -109,12 +109,11 @@ MarketNewsApp/
 
 ## AI Providers
 
-Το `AiSummarizer` υποστηρίζει τρεις providers, επιλέγονται μέσω `AI_PROVIDER` στο `.env`:
+Το `AiSummarizer` υποστηρίζει δύο providers, επιλέγονται μέσω `AI_PROVIDER` στο `.env`:
 
 | Provider | `AI_PROVIDER` | Απαιτούμενα env vars | Σημειώσεις |
 |---|---|---|---|
-| GitHub Copilot SDK (**default**) | `AgentSettings.Provider = copilot` | *(κανένα API key — χρειάζεται `copilot` CLI login)* | Χρησιμοποιεί το ήδη συνδεδεμένο Copilot session· λειτουργεί ακόμη και όταν το `api.groq.com`/OpenAI endpoints είναι μπλοκαρισμένα από εταιρικό firewall |
-| Groq | `AgentSettings.Provider = groq` | `GROQ_API_KEY` | Απευθείας HTTPS στο `api.groq.com` |
+| GitHub Copilot SDK (**default**) | `AgentSettings.Provider = copilot` | *(κανένα API key — χρειάζεται `copilot` CLI login)* | Χρησιμοποιεί το ήδη συνδεδεμένο Copilot session· λειτουργεί ακόμη και όταν τα OpenAI endpoints είναι μπλοκαρισμένα από εταιρικό firewall |
 | Azure OpenAI / Foundry | `AgentSettings.Provider = azure` | `AZURE_OPENAI_API_KEY` | Endpoint, deployment και API version βρίσκονται στο `AgentSettings` της SQLite |
 
 ## Production Configuration (SQLite)
@@ -160,7 +159,7 @@ SQLite database και το environment variable δεν χρειάζεται γ�
 - .NET 8
 - Microsoft.Playwright (browser automation)
 - GitHub.Copilot.SDK (default AI summarization provider)
-- Groq API / Azure OpenAI (alternative AI summarization providers via HTTP)
+- Azure OpenAI / OpenAI (alternative AI summarization providers via HTTP)
 - MailKit (SMTP email)
 - Scriban (HTML templating)
 - DotNetEnv (.env file loading)

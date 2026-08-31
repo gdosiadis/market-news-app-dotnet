@@ -32,23 +32,26 @@ public sealed class AzureOpenAiChatAgent : IChatAgent
         };
 
         var json = JsonSerializer.Serialize(request);
-        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
         var path = $"openai/deployments/{_deployment}/chat/completions?api-version={_apiVersion}";
-        var response = await _http.PostAsync(path, content);
-
-        if (!response.IsSuccessStatusCode)
+        return await OpenAiResilience.TransportRetry.ExecuteAsync(async _ =>
         {
-            var errorBody = await response.Content.ReadAsStringAsync();
-            throw new HttpRequestException($"Azure OpenAI API error: {response.StatusCode} - {errorBody}");
-        }
+            using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            using var response = await _http.PostAsync(path, content);
 
-        var responseJson = await response.Content.ReadAsStringAsync();
-        using var doc = JsonDocument.Parse(responseJson);
-        return doc.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString() ?? "";
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                throw new HttpRequestException($"Azure OpenAI API error: {response.StatusCode} - {errorBody}", null, response.StatusCode);
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseJson);
+            return doc.RootElement
+                .GetProperty("choices")[0]
+                .GetProperty("message")
+                .GetProperty("content")
+                .GetString() ?? "";
+        });
     }
 
     public ValueTask DisposeAsync()

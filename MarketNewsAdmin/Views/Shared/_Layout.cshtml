@@ -5,15 +5,30 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>@ViewData["Title"] | Market Summarizer</title>
+    <link rel="icon" type="image/svg+xml" href="~/images/optima-o.svg" asp-append-version="true" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito+Sans:opsz,wght@6..12,400;6..12,600;6..12,700;6..12,800&display=swap" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        (() => {
+            const favicon = document.querySelector('link[rel="icon"]');
+            const optimaIcon = favicon.href;
+            const frames = ["&#9698;", "&#9699;", "&#9700;", "&#9697;"];
+            let frame = 0;
+            const loadingIcon = () => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#2b0033"/><text x="32" y="45" fill="#ff7a00" font-family="Arial" font-size="40" text-anchor="middle">${frames[frame++ % frames.length]}</text></svg>`)}`;
+            const timer = window.setInterval(() => favicon.href = loadingIcon(), 120);
+            window.addEventListener('load', () => {
+                window.clearInterval(timer);
+                favicon.href = optimaIcon;
+            }, { once: true });
+        })();
+    </script>
 </head>
 <body>
 <div class="app-shell">
     <aside class="sidebar">
-        <a class="brand" asp-controller="Dashboard" asp-action="Index"><span class="brand-word">Optima</span><span class="brand-sub">bank</span></a>
+        <a class="brand" asp-controller="Dashboard" asp-action="Index" aria-label="Optima bank home"><img class="brand-logo" src="~/images/logo.png" alt="Optima bank" /></a>
         <p class="product-label">Market Summarizer</p>
         <nav class="nav-list" aria-label="Main navigation">
             <a asp-controller="Dashboard" asp-action="Index"><i data-lucide="layout-dashboard"></i>Overview</a>
@@ -28,6 +43,9 @@
             <a asp-controller="Management" asp-action="Index" asp-route-section="templates"><i data-lucide="file-text"></i>Report templates</a>
             <a asp-controller="Management" asp-action="Index" asp-route-section="settings"><i data-lucide="settings-2"></i>Application settings</a>
             <p class="nav-heading">Oversight</p>
+            <a asp-controller="Management" asp-action="PipelineRuns"><i data-lucide="activity"></i>Pipeline runs</a>
+            <a asp-controller="Management" asp-action="ReportArchive"><i data-lucide="archive"></i>Report archive</a>
+            <a asp-controller="Management" asp-action="PipelineCheckpoints"><i data-lucide="database"></i>Pipeline checkpoints</a>
             <a asp-controller="Management" asp-action="Activity"><i data-lucide="history"></i>Change history</a>
         </nav>
         <div class="profile"><span class="avatar">@User.Identity?.Name?.FirstOrDefault()</span><div><strong>@User.Identity?.Name</strong><small>Administrator</small></div></div>

@@ -20,7 +20,7 @@ public static class ChatAgentFactory
         var provider = settings.Provider;
 
         // Azure OpenAI (explicit or fully-configured fallback)
-        if (provider != "copilot" && provider != "groq" && provider != "openai" &&
+        if (provider != "copilot" && provider != "openai" &&
             !string.IsNullOrWhiteSpace(settings.AzureEndpoint) &&
             !string.IsNullOrWhiteSpace(settings.AzureApiKey) &&
             !string.IsNullOrWhiteSpace(settings.AzureDeployment))
@@ -28,12 +28,6 @@ public static class ChatAgentFactory
             return new AzureOpenAiChatAgent(
                 settings.AzureEndpoint, settings.AzureApiKey, settings.AzureDeployment,
                 string.IsNullOrWhiteSpace(settings.AzureApiVersion) ? "2024-10-21" : settings.AzureApiVersion);
-        }
-
-        // Groq (explicit via AI_PROVIDER=groq)
-        if (provider == "groq" && !string.IsNullOrWhiteSpace(settings.GroqApiKey))
-        {
-            return new GroqChatAgent(settings.GroqApiKey);
         }
 
         // OpenAI (explicit via AI_PROVIDER=openai)

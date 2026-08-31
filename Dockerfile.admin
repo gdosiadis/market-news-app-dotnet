@@ -6,10 +6,12 @@ RUN dotnet restore MarketNewsAdmin/MarketNewsAdmin.csproj
 COPY MarketNewsApp/ MarketNewsApp/
 COPY MarketNewsAdmin/ MarketNewsAdmin/
 RUN dotnet publish MarketNewsAdmin/MarketNewsAdmin.csproj --configuration Release --output /out --no-restore -p:CopilotSkipCliDownload=true
+RUN dotnet publish MarketNewsApp/MarketNewsApp.csproj --configuration Release --output /pipeline --no-restore -p:CopilotSkipCliDownload=true
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
+FROM mcr.microsoft.com/playwright/dotnet:v1.44.0-jammy
 WORKDIR /app
 COPY --from=build /out/ .
+COPY --from=build /pipeline/ ./pipeline/
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "MarketNewsAdmin.dll"]
